@@ -1,0 +1,16 @@
+[package]
+name = "bonkers"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+loom = ["dep:loom"]
+
+[dependencies]
+log = "0.4.22"
+rayon-core = "1"
+loom = { version = "0.7", optional = true }
+
+[profile.loom]
+inherits = "dev"
+opt-level = 2
