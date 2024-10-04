@@ -6,9 +6,9 @@ use std::ops::Deref;
 use std::ptr::null_mut;
 
 pub use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, AtomicUsize, Ordering as AtomicOrd};
+pub use std::sync::mpsc::channel;
 pub use std::sync::{Arc, LockResult, Mutex, MutexGuard};
 pub use std::thread::{current, park, yield_now, Builder, JoinHandle, Thread};
-pub use std::sync::mpsc::channel;
 
 #[cfg(test)]
 mod tests;
@@ -50,27 +50,24 @@ impl Backoff {
 pub trait Runner: Deref<Target = Self::ThreadPool> + Clone + Send + Sync + 'static {
     type ThreadPool: ThreadPool;
     fn when<CC, T>(&self, cowns: CC, thunk: T)
-    where CC: CownCollection, T: for<'a> FnOnce(CC::Guard<'a>) + Send + Sync + 'static, Self: 'static;
+    where
+        CC: CownCollection,
+        T: for<'a> FnOnce(CC::Guard<'a>) + Send + Sync + 'static,
+        Self: 'static;
 }
 
 impl<TP: ThreadPool, P: Deref<Target = TP> + Clone + Send + Sync + 'static> Runner for P {
     type ThreadPool = TP;
 
-    fn when<CC: CownCollection, T: for<'a> FnOnce(CC::Guard<'a>) + Send + Sync + 'static>(
-        &self,
-        cowns: CC,
-        thunk: T,
-    ) where
+    fn when<CC: CownCollection, T: for<'a> FnOnce(CC::Guard<'a>) + Send + Sync + 'static>(&self, cowns: CC, thunk: T)
+    where
         Self: 'static,
     {
         let mut cown_vec = Vec::from_iter(cowns.cown_bases());
         cown_vec.sort_unstable_by_key(|&cbr| cbr as *const _ as *const () as usize);
-        cown_vec.windows(2).for_each(|cbs| {
-            assert_ne!(
-                cbs[0] as *const _ as *const () as usize,
-                cbs[1] as *const _ as *const () as usize
-            )
-        });
+        cown_vec
+            .windows(2)
+            .for_each(|cbs| assert_ne!(cbs[0] as *const _ as *const () as usize, cbs[1] as *const _ as *const () as usize));
         let requests = Vec::from_iter(cown_vec.iter().cloned().map(Request::new));
         let behavior = Box::into_raw(Behavior::new(requests, (cowns, Some(thunk))));
         unsafe {
@@ -159,12 +156,7 @@ impl Request {
             if next.is_null() {
                 let latest = &*self.target;
                 let old = latest
-                    .compare_exchange(
-                        self as *const _ as *mut _,
-                        NULL,
-                        AtomicOrd::SeqCst,
-                        AtomicOrd::Acquire,
-                    )
+                    .compare_exchange(self as *const _ as *mut _, NULL, AtomicOrd::SeqCst, AtomicOrd::Acquire)
                     .unwrap_or_else(identity);
                 if std::ptr::eq(old as *const _, self as *const _) {
                     return;
@@ -191,7 +183,9 @@ trait Thunk: Send + Sync + Send + 'static {
 }
 
 impl<C, F> Thunk for (C, Option<F>)
-where C: CownCollection, F: for<'a> FnOnce(C::Guard<'a>) + Send + Sync + 'static
+where
+    C: CownCollection,
+    F: for<'a> FnOnce(C::Guard<'a>) + Send + Sync + 'static,
 {
     fn consume_boxed_and_release(&mut self) {
         self.1.take().unwrap()(self.0.lock());

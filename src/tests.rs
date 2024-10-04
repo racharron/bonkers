@@ -1,8 +1,7 @@
-mod util;
 mod os_mock;
-mod simple;
 #[cfg(feature = "rayon")]
 mod rayon;
+mod simple;
 #[cfg(feature = "threadpool")]
 mod threadpool;
-
+mod util;

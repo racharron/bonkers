@@ -1,6 +1,6 @@
+use crate::SimpleThreadPool;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use crate::SimpleThreadPool;
 
 use crate::tests::util;
 

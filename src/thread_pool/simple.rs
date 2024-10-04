@@ -1,10 +1,10 @@
-use std::thread::{current, park, yield_now, Builder, JoinHandle, Thread};
-use std::sync::{Arc, Mutex};
-use std::num::NonZeroUsize;
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering as AtomicOrd};
-use std::mem::take;
 use crate::{Backoff, ThreadPool};
+use std::collections::VecDeque;
+use std::mem::take;
+use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering as AtomicOrd};
+use std::sync::{Arc, Mutex};
+use std::thread::{current, park, yield_now, Builder, JoinHandle, Thread};
 
 /// A simple threadpool.  Internally implemented with a [`Mutex`] of [`VecDeque`]s.
 pub struct SimpleThreadPool {
@@ -54,34 +54,38 @@ impl SimpleThreadPool {
                 parked_on_shutdown: Mutex::new(Vec::new()),
             })
         };
-        let threads = (0..thread_count).map(|i| {
-            let shared = shared.clone();
-            Builder::new().name(Self::new_name(i)).spawn(move || {
-                let mut backoff = Backoff::new();
-                loop {
-                    match shared.state.load(AtomicOrd::Acquire).try_into().unwrap() {
-                        MyThreadPoolState::Running => {
-                            let task = shared.tasks.lock().unwrap().pop_front();
-                            if let Some(task) = task {
-                                backoff = Backoff::new();
-                                task();
-                            } else if !backoff.snooze() {
-                                yield_now();
+        let threads = (0..thread_count)
+            .map(|i| {
+                let shared = shared.clone();
+                Builder::new()
+                    .name(Self::new_name(i))
+                    .spawn(move || {
+                        let mut backoff = Backoff::new();
+                        loop {
+                            match shared.state.load(AtomicOrd::Acquire).try_into().unwrap() {
+                                MyThreadPoolState::Running => {
+                                    let task = shared.tasks.lock().unwrap().pop_front();
+                                    if let Some(task) = task {
+                                        backoff = Backoff::new();
+                                        task();
+                                    } else if !backoff.snooze() {
+                                        yield_now();
+                                    }
+                                }
+                                MyThreadPoolState::Cancelling => {
+                                    let old = shared.running_workers.fetch_sub(1, AtomicOrd::AcqRel);
+                                    if old == 1 {
+                                        shared.parked_on_shutdown.lock().unwrap().pop().unwrap().unpark();
+                                    }
+                                    return;
+                                }
+                                MyThreadPoolState::ShutDown => unreachable!(),
                             }
                         }
-                        MyThreadPoolState::Cancelling =>  {
-                            let old = shared.running_workers.fetch_sub(1, AtomicOrd::AcqRel);
-                            if old == 1 {
-                                shared.parked_on_shutdown.lock().unwrap().pop().unwrap().unpark();
-                            }
-                            return;
-                        }
-                        MyThreadPoolState::ShutDown => unreachable!(),
-                    }
-                }
-            }).unwrap()
-        })
-        .collect();
+                    })
+                    .unwrap()
+            })
+            .collect();
         Self {
             shared,
             threads: Mutex::new(threads),
@@ -99,27 +103,25 @@ impl SimpleThreadPool {
     /// Shutdown the threadpool, preventing any new tasks from being executed, waiting until all
     /// currently executing tasks have been finished.
     pub fn shutdown(&self) {
-        if
-            self.shared.state.compare_exchange(
-                MyThreadPoolState::Running as _,
-                MyThreadPoolState::Cancelling as _,
-                AtomicOrd::AcqRel,
-                AtomicOrd::Acquire
-            )
-                == Err(MyThreadPoolState::Cancelling as _)
+        if self.shared.state.compare_exchange(
+            MyThreadPoolState::Running as _,
+            MyThreadPoolState::Cancelling as _,
+            AtomicOrd::AcqRel,
+            AtomicOrd::Acquire,
+        ) == Err(MyThreadPoolState::Cancelling as _)
         {
-            return
+            return;
         }
         self.shared.parked_on_shutdown.lock().unwrap().push(current());
         loop {
             park();
             if self.shared.running_workers.load(AtomicOrd::Acquire) == 0 {
                 if self.shared.state.load(AtomicOrd::Acquire) == MyThreadPoolState::Cancelling as isize {
-                    return
+                    return;
                 }
                 let threads = take(&mut *self.threads.lock().unwrap());
                 if threads.is_empty() {
-                    continue
+                    continue;
                 }
                 for thread in threads {
                     thread.join().unwrap();
@@ -128,7 +130,7 @@ impl SimpleThreadPool {
                 for thread in take(&mut *self.shared.parked_on_shutdown.lock().unwrap()) {
                     thread.unpark();
                 }
-                return
+                return;
             }
         }
     }

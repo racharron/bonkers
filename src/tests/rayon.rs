@@ -1,6 +1,6 @@
-use std::sync::Arc;
-use rayon_core::ThreadPoolBuilder;
 use crate::tests::util;
+use rayon_core::ThreadPoolBuilder;
+use std::sync::Arc;
 
 #[test]
 fn when_none_simple() {

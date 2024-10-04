@@ -1,7 +1,7 @@
+use crate::ThreadPool;
+use std::mem::take;
 use std::sync::{Mutex, MutexGuard};
 use std::thread::{Builder, JoinHandle};
-use std::mem::take;
-use crate::ThreadPool;
 
 /// A mock threadpool that simply creates a new OS thread for each task.
 pub struct OsThreads {
@@ -21,7 +21,6 @@ impl OsThreads {
         for thread in take(&mut *self.threads.lock().unwrap()) {
             thread.join().unwrap();
         }
-
     }
 
     fn remove_done(&self) -> MutexGuard<Vec<JoinHandle<()>>> {
@@ -50,11 +49,6 @@ impl ThreadPool for OsThreads {
     fn run<T: FnOnce() + Send + Sync + 'static>(&self, task: T) {
         let mut threads = self.remove_done();
         let count = threads.len();
-        threads.push(
-            Builder::new()
-                .name(format!("OsThreads Task {count}"))
-                .spawn(task)
-                .unwrap()
-        );
+        threads.push(Builder::new().name(format!("OsThreads Task {count}")).spawn(task).unwrap());
     }
 }

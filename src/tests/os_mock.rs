@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use crate::OsThreads;
+use std::sync::Arc;
 
 use crate::tests::util;
 

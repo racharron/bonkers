@@ -1,7 +1,7 @@
-use std::sync::{Arc, MutexGuard};
+use crate::{Cown, Runner};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::channel;
-use crate::{Cown, Runner};
+use std::sync::{Arc, MutexGuard};
 
 pub fn when_none_simple(runner: impl Runner) {
     let (sender, receiver) = channel();
