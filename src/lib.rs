@@ -5,17 +5,16 @@ use std::iter::{empty, once};
 use std::ops::Deref;
 use std::ptr::null_mut;
 
-pub use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, AtomicIsize, Ordering as AtomicOrd};
+pub use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, AtomicUsize, Ordering as AtomicOrd};
 pub use std::sync::{Arc, LockResult, Mutex, MutexGuard};
-pub use std::thread::{Builder, Thread, park, yield_now, JoinHandle, current};
+pub use std::thread::{current, park, yield_now, Builder, JoinHandle, Thread};
 pub use std::sync::mpsc::channel;
 
 #[cfg(test)]
 mod tests;
 
 mod thread_pool;
-pub use thread_pool::{MyThreadPool, OsThreads, ThreadPool};
-
+pub use thread_pool::{SimpleThreadPool, ThreadPool, OsThreads};
 
 struct Backoff {
     limit: u32,

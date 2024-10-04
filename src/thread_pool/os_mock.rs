@@ -1,0 +1,55 @@
+use std::sync::{Mutex, MutexGuard};
+use std::thread::{yield_now, Builder, JoinHandle};
+use std::mem::take;
+use crate::ThreadPool;
+
+pub struct OsThreads {
+    threads: Mutex<Vec<JoinHandle<()>>>,
+}
+
+impl OsThreads {
+    pub fn new() -> Self {
+        Self {
+            threads: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn remove_done(&self) -> MutexGuard<Vec<JoinHandle<()>>> {
+        let mut guard = self.threads.lock().unwrap();
+        let old_threads = take(&mut *guard);
+        let mut new_threads = Vec::new();
+        for thread in old_threads {
+            if !thread.is_finished() {
+                new_threads.push(thread);
+            }
+        }
+        *guard = new_threads;
+        guard
+    }
+}
+
+impl Default for OsThreads {
+    fn default() -> Self {
+        OsThreads {
+            threads: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl ThreadPool for OsThreads {
+    fn run<T: FnOnce() + Send + Sync + 'static>(&self, task: T) {
+        let mut threads = self.remove_done();
+        let count = threads.len();
+        threads.push(
+            Builder::new()
+                .name(format!("OsThreads Task {count}"))
+                .spawn(task)
+                .unwrap()
+        );
+    }
+
+    fn yield_here(&self) {
+        drop(self.remove_done());
+        yield_now()
+    }
+}

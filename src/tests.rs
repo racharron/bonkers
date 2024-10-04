@@ -1,10 +1,10 @@
 use super::*;
-use crate::thread_pool::MyThreadPool;
+use crate::thread_pool::SimpleThreadPool;
 use std::num::{NonZero, NonZeroUsize};
 
 #[test]
 fn when_none_simple() {
-    let pool = Arc::new(MyThreadPool::with_threads(NonZeroUsize::new(4).unwrap()));
+    let pool = Arc::new(SimpleThreadPool::with_threads(NonZeroUsize::new(4).unwrap()));
     let (sender, receiver) = channel();
     pool.when((), move |()| {
         sender.send(()).unwrap();
@@ -15,7 +15,7 @@ fn when_none_simple() {
 
 #[test]
 fn when_none_loop() {
-    let pool = Arc::new(MyThreadPool::with_threads(NonZeroUsize::new(4).unwrap()));
+    let pool = Arc::new(SimpleThreadPool::with_threads(NonZeroUsize::new(4).unwrap()));
     // let pool = Arc::new(OsThreads::new());
     let mut receivers = Vec::new();
     let mut values = Vec::new();
@@ -35,7 +35,7 @@ fn when_none_loop() {
 #[test]
 fn sequential_1() {
     const COUNT: usize = 10;
-    let pool = Arc::new(MyThreadPool::with_threads(NonZeroUsize::new(4).unwrap()));
+    let pool = Arc::new(SimpleThreadPool::with_threads(NonZeroUsize::new(4).unwrap()));
     let cown = Arc::new(Cown::new(Vec::with_capacity(COUNT)));
     for i in 0..COUNT {
         pool.when(cown.clone(), move |mut cown| {
@@ -56,7 +56,7 @@ fn sequential_1() {
 
 #[test]
 fn indirect_seq() {
-    let pool = Arc::new(MyThreadPool::with_threads(NonZero::new(4).unwrap()));
+    let pool = Arc::new(SimpleThreadPool::with_threads(NonZero::new(4).unwrap()));
     let [a, b, c, d] = [0; 4].map(Cown::new).map(Arc::new);
     let counter = Arc::new(AtomicUsize::new(0));
     let (sender, receiver) = channel();
@@ -104,7 +104,7 @@ fn indirect_seq() {
 
 #[test]
 fn triangle() {
-    let pool = Arc::new(MyThreadPool::with_threads(NonZero::new(4).unwrap()));
+    let pool = Arc::new(SimpleThreadPool::with_threads(NonZero::new(4).unwrap()));
     let [top, left, right] = [0; 3].map(Cown::new).map(Arc::new);
     let counter = Arc::new(AtomicUsize::new(0));
     let (sender, receiver) = channel();
