@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering as AtomicOrd};
 use std::mem::take;
 use crate::{Backoff, ThreadPool};
 
-/// A simple threadpool
+/// A simple threadpool.  Internally implemented with a [`Mutex`] of [`VecDeque`]s.
 pub struct SimpleThreadPool {
     shared: Arc<SimpleThreadPoolShared>,
     threads: Mutex<Vec<JoinHandle<()>>>,
