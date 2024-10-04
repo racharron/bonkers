@@ -2,7 +2,7 @@ use crate::{AtomicOrd, Backoff};
 use std::collections::VecDeque;
 use std::mem::take;
 use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::sync::atomic::{AtomicIsize, AtomicUsize};
 use std::thread::{current, park, yield_now, Builder, JoinHandle, Thread};
 
@@ -162,6 +162,19 @@ impl OsThreads {
             threads: Mutex::new(Vec::new()),
         }
     }
+
+    fn remove_done(&self) -> MutexGuard<Vec<JoinHandle<()>>> {
+        let mut guard = self.threads.lock().unwrap();
+        let old_threads = take(&mut *guard);
+        let mut new_threads = Vec::new();
+        for thread in old_threads {
+            if !thread.is_finished() {
+                new_threads.push(thread);
+            }
+        }
+        *guard = new_threads;
+        guard
+    }
 }
 
 impl Default for OsThreads {
@@ -174,7 +187,7 @@ impl Default for OsThreads {
 
 impl ThreadPool for OsThreads {
     fn run<T: FnOnce() + Send + Sync + 'static>(&self, task: T) {
-        let mut threads = self.threads.lock().unwrap();
+        let mut threads = self.remove_done();
         let count = threads.len();
         threads.push(
             Builder::new()
@@ -185,6 +198,7 @@ impl ThreadPool for OsThreads {
     }
 
     fn yield_here(&self) {
+        drop(self.remove_done());
         yield_now()
     }
 }
