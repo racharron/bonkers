@@ -1,8 +1,10 @@
-use crate::Backoff;
-use crate::sync::*;
+use crate::{AtomicOrd, Backoff};
 use std::collections::VecDeque;
-use std::mem::replace;
+use std::mem::take;
 use std::num::NonZeroUsize;
+use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicIsize, AtomicUsize};
+use std::thread::{current, park, yield_now, Builder, JoinHandle, Thread};
 
 pub trait ThreadPool {
     fn run<T: FnOnce() + Send + Sync + 'static>(&self, task: T);
@@ -71,10 +73,8 @@ impl MyThreadPool {
                             if let Some(task) = task {
                                 backoff = Backoff::new();
                                 task();
-                            } else {
-                                if !backoff.snooze() {
-                                    yield_now();
-                                }
+                            } else if !backoff.snooze() {
+                                yield_now();
                             }
                         }
                         MyThreadPoolState::Cancelling =>  {
@@ -123,7 +123,7 @@ impl MyThreadPool {
                 if self.shared.state.load(AtomicOrd::Acquire) == MyThreadPoolState::Cancelling as isize {
                     return
                 }
-                let threads = replace(&mut *self.threads.lock().unwrap(), Vec::new());
+                let threads = take(&mut *self.threads.lock().unwrap());
                 if threads.is_empty() {
                     continue
                 }
@@ -131,7 +131,7 @@ impl MyThreadPool {
                     thread.join().unwrap();
                 }
                 self.shared.state.store(MyThreadPoolState::ShutDown as isize, AtomicOrd::Release);
-                for thread in replace(&mut *self.shared.parked_on_shutdown.lock().unwrap(), Vec::new()) {
+                for thread in take(&mut *self.shared.parked_on_shutdown.lock().unwrap()) {
                     thread.unpark();
                 }
                 return
@@ -159,6 +159,14 @@ impl ThreadPool for MyThreadPool {
 impl OsThreads {
     pub fn new() -> Self {
         Self {
+            threads: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl Default for OsThreads {
+    fn default() -> Self {
+        OsThreads {
             threads: Mutex::new(Vec::new()),
         }
     }

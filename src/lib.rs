@@ -5,20 +5,10 @@ use std::iter::{empty, once};
 use std::ops::Deref;
 use std::ptr::null_mut;
 
-use sync::*;
-
-macro_rules! case {
-    (std: { $($std:item)* } loom: { $($loom:item)* } ) => {
-        $(
-            #[cfg(not(feature = "loom"))]
-            $std
-        )*
-        $(
-            #[cfg(feature = "loom")]
-            $loom
-        )*
-    };
-}
+pub use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, AtomicIsize, Ordering as AtomicOrd};
+pub use std::sync::{Arc, LockResult, Mutex, MutexGuard};
+pub use std::thread::{Builder, Thread, park, yield_now, JoinHandle, current};
+pub use std::sync::mpsc::channel;
 
 #[cfg(test)]
 mod tests;
@@ -26,16 +16,6 @@ mod tests;
 mod thread_pool;
 pub use thread_pool::{MyThreadPool, OsThreads, ThreadPool};
 
-case! {
-    std: {
-        #[path = "std_sync.rs"]
-        mod sync;
-    }
-    loom: {
-        #[path = "loom_sync.rs"]
-        mod sync;
-    }
-}
 
 struct Backoff {
     limit: u32,
@@ -53,7 +33,6 @@ impl Backoff {
     /// True indicates that this function did a spin loop, false indicates that the thread should
     /// yield.
     fn snooze(&mut self) -> bool {
-        #[cfg(not(feature = "loom"))]
         if self.counter <= self.limit {
             for _ in 0..self.counter {
                 std::hint::spin_loop();
@@ -63,8 +42,6 @@ impl Backoff {
         } else {
             false
         }
-        #[cfg(feature = "loom")]
-        false
     }
 }
 
@@ -133,7 +110,7 @@ pub trait CownCollectionSuper: Send + Sync + 'static {
 
 pub trait CownCollection: CownCollectionSuper {
     fn lock(&self) -> Self::Guard<'_>;
-    fn cown_bases<'a>(&'a self) -> impl IntoIterator<Item = &'a dyn CownBase>;
+    fn cown_bases(&self) -> impl IntoIterator<Item = &dyn CownBase>;
 }
 
 struct Request {
@@ -187,7 +164,7 @@ impl Request {
                         AtomicOrd::Acquire,
                     )
                     .unwrap_or_else(identity);
-                if old as *const _ == self as *const _ {
+                if std::ptr::eq(old as *const _, self as *const _) {
                     return;
                 }
                 let mut backoff = Backoff::new();
@@ -259,21 +236,12 @@ unsafe impl<T: Sync> Sync for Cown<T> {}
 // impl<T> UnwindSafe for Cown<T> {}
 
 impl<T> Cown<T> {
-    #[cfg(not(feature = "loom"))]
     pub const fn new(value: T) -> Self {
         Cown {
             last: AtomicPtr::new(null_mut()),
             data: Mutex::new(value),
         }
     }
-    #[cfg(feature = "loom")]
-    pub fn new(value: T) -> Self {
-        Cown {
-            last: AtomicPtr::new(null_mut()),
-            data: Mutex::new(value),
-        }
-    }
-    #[allow(clippy::wrong_self_convention)]
     pub fn into_inner(self) -> LockResult<T> {
         self.data.into_inner()
     }
@@ -329,7 +297,7 @@ impl<T: CownCollection, const N: usize> CownCollection for [T; N] {
         self.each_ref().map(T::lock)
     }
 
-    fn cown_bases<'a>(&'a self) -> impl IntoIterator<Item = &'a dyn CownBase> {
+    fn cown_bases(&self) -> impl IntoIterator<Item = &dyn CownBase> {
         self.iter().flat_map(T::cown_bases)
     }
 }
@@ -340,12 +308,13 @@ macro_rules! variadic_cown_collection {
             type Guard<'a> = ($($v::Guard<'a>,)*);
         }
         impl<$($v: CownCollection,)*> CownCollection for ($($v,)*) {
-            fn lock<'a>(&'a self) -> Self::Guard<'a> {
+            fn lock(&self) -> Self::Guard<'_> {
                 #![allow(non_snake_case)]
                 let ($(ref $v,)*) = self;
+                #[allow(clippy::unused_unit)]
                 ($($v.lock(),)*)
             }
-            fn cown_bases<'a>(&'a self) -> impl IntoIterator<Item=&'a dyn CownBase> {
+            fn cown_bases(&self) -> impl IntoIterator<Item=&dyn CownBase> {
                 #![allow(non_snake_case)]
                 let ($(ref $v,)*) = self;
                 empty() $(.chain($v.cown_bases()))*
