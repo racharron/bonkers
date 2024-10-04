@@ -4,11 +4,9 @@ use std::convert::identity;
 use std::iter::{empty, once};
 use std::ops::Deref;
 use std::ptr::null_mut;
-
-pub use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, AtomicUsize, Ordering as AtomicOrd};
-pub use std::sync::mpsc::channel;
-pub use std::sync::{Arc, LockResult, Mutex, MutexGuard};
-pub use std::thread::{current, park, yield_now, Builder, JoinHandle, Thread};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering as AtomicOrd};
+use std::sync::{Arc, LockResult, Mutex, MutexGuard};
+use std::thread::yield_now;
 
 #[cfg(test)]
 mod tests;
