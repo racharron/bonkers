@@ -43,6 +43,7 @@ impl TryFrom<isize> for MyThreadPoolState {
 }
 
 impl SimpleThreadPool {
+    /// Create a new threadpool with the given number of threads.
     pub fn with_threads(threads: NonZeroUsize) -> Self {
         let thread_count = threads.get();
         let shared = {
@@ -95,6 +96,8 @@ impl SimpleThreadPool {
         }
     }
 
+    /// Shutdown the threadpool, preventing any new tasks from being executed, waiting until all
+    /// currently executing tasks have been finished.
     pub fn shutdown(&self) {
         if
             self.shared.state.compare_exchange(
@@ -129,15 +132,12 @@ impl SimpleThreadPool {
             }
         }
     }
-}
 
-impl ThreadPool for SimpleThreadPool {
-    fn run<T: FnOnce() + Send + Sync + 'static>(&self, task: T) {
-        self.shared.tasks.lock().unwrap().push_back(Box::new(task));
-    }
-
-
-    fn yield_here(&self) -> bool {
+    /// Attempt to run a queued task from the threadpool on the currently running thread.  Returns
+    /// whether a task was run.  So a `true` indicates that the current thread executed a task from
+    /// the threadpool, and a false indicates that it did not.  Most of the time, when this method
+    /// returns false, [`std::thread::yield_now`] should be called.
+    pub fn yield_here(&self) -> bool {
         let task = self.shared.tasks.lock().unwrap().pop_front();
         if let Some(task) = task {
             task();
@@ -145,5 +145,11 @@ impl ThreadPool for SimpleThreadPool {
         } else {
             false
         }
+    }
+}
+
+impl ThreadPool for SimpleThreadPool {
+    fn run<T: FnOnce() + Send + Sync + 'static>(&self, task: T) {
+        self.shared.tasks.lock().unwrap().push_back(Box::new(task));
     }
 }

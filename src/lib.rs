@@ -16,6 +16,7 @@ mod tests;
 mod thread_pool;
 pub use thread_pool::{SimpleThreadPool, ThreadPool, OsThreads};
 
+/// Basically taken from `crossbeam`.
 struct Backoff {
     limit: u32,
     counter: u32,
@@ -144,7 +145,7 @@ impl Request {
                     let mut backoff = Backoff::new();
                     while !(*prev).scheduled.load(AtomicOrd::Acquire) {
                         if !backoff.snooze() {
-                            runner.yield_here();
+                            yield_now();
                         }
                     }
                     (*prev).next.store(behavior, AtomicOrd::Release);
@@ -173,7 +174,7 @@ impl Request {
                     next = self.next.load(AtomicOrd::Acquire);
                     if next.is_null() {
                         if !backoff.snooze() {
-                            runner.yield_here();
+                            yield_now();
                         }
                     } else {
                         break;

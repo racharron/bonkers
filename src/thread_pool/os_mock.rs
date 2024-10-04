@@ -48,9 +48,4 @@ impl ThreadPool for OsThreads {
                 .unwrap()
         );
     }
-
-    fn yield_here(&self) -> bool {
-        drop(self.remove_done());
-        false
-    }
 }
