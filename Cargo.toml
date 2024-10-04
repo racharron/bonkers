@@ -1,7 +1,9 @@
 [package]
 name = "bonkers"
+authors = ["Rawley Charron"]
 version = "0.1.0"
 edition = "2021"
+repository = "https://github.com/racharron/bonkers"
 description = "An implementation of behavior oriented concurrency"
 resolver = "2"
 keywords = ["concurrency", "cown", "behavior", "threadpool"]
