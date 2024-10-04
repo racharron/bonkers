@@ -30,5 +30,10 @@ name = "linear"
 harness = false
 required-features = ["rayon", "threadpool"]
 
+[[bench]]
+name = "recursive_shuffle"
+harness = false
+required-features = ["rayon", "threadpool"]
+
 [package.metadata.docs.rs]
 all-features = true
