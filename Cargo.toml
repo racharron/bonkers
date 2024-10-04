@@ -16,5 +16,13 @@ threadpool = ["dep:threadpool"]
 rayon-core = { version =  "1", optional = true }
 threadpool = { version = "1", optional = true }
 
+[dev-dependencies]
+divan = "0.1"
+
+[[bench]]
+name = "thread_pools"
+harness = false
+required-features = ["rayon", "threadpool"]
+
 [package.metadata.docs.rs]
 all-features = true
