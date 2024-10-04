@@ -38,3 +38,17 @@ fn triangle() {
     util::triangle(pool.clone());
     pool.join();
 }
+
+#[test]
+fn recursive_sequential() {
+    let pool = Arc::new(ThreadPool::new(4));
+    util::recursive_sequential(pool.clone(), 10);
+    pool.join();
+}
+
+#[test]
+fn recursive_shuffle() {
+    let pool = Arc::new(ThreadPool::new(4));
+    util::recursive_shuffle(pool.clone(), 3);
+    pool.join();
+}

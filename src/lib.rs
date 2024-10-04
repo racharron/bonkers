@@ -60,6 +60,7 @@
 
 #![deny(missing_docs)]
 
+use std::collections::{LinkedList, VecDeque};
 use std::convert::identity;
 use std::iter::{empty, once};
 use std::ops::Deref;
@@ -358,6 +359,31 @@ macro_rules! ref_cown_collection {
 
 ref_cown_collection! {
     T => &'static Cown<T>, Arc<Cown<T>>
+}
+
+macro_rules! collection_cown_collection {
+    ( $v:ident => $( $t:ident ),+ ) => {
+        $(
+            impl<$v: CownCollectionSuper> CownCollectionSuper for $t<$v> {
+                type Guard<'a> = $t<$v::Guard<'a>>;
+            }
+            impl<$v: CownCollection> CownCollection for $t<$v> {
+                fn lock(&self) -> Self::Guard<'_> {
+                    self.into_iter().map($v::lock).collect()
+                }
+
+                #[doc(hidden)]
+                #[allow(private_interfaces)]
+                fn cown_bases(&self) -> impl IntoIterator<Item=&dyn CownBase> {
+                    self.into_iter().flat_map($v::cown_bases)
+                }
+            }
+        )+
+    };
+}
+
+collection_cown_collection! {
+    T => Vec, VecDeque, LinkedList
 }
 
 impl<T: CownCollectionSuper, const N: usize> CownCollectionSuper for [T; N] {

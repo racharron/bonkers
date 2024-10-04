@@ -32,3 +32,15 @@ fn triangle() {
     let pool = Arc::new(ThreadPoolBuilder::new().num_threads(4).build().unwrap());
     util::triangle(pool.clone());
 }
+
+#[test]
+fn recursive_sequential() {
+    let pool = Arc::new(ThreadPoolBuilder::new().num_threads(4).build().unwrap());
+    util::recursive_sequential(pool.clone(), 10);
+}
+
+#[test]
+fn recursive_shuffle() {
+    let pool = Arc::new(ThreadPoolBuilder::new().num_threads(4).build().unwrap());
+    util::recursive_shuffle(pool.clone(), 3);
+}

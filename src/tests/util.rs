@@ -1,7 +1,10 @@
 use crate::{Cown, Runner};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::channel;
+use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, MutexGuard};
+use rand::prelude::SliceRandom;
+use rand::{Rng, SeedableRng};
+use rand::rngs::SmallRng;
 
 pub fn when_none_simple(runner: impl Runner) {
     let (sender, receiver) = channel();
@@ -134,4 +137,90 @@ pub fn triangle(runner: impl Runner) {
         }
     });
     receiver.recv().unwrap();
+}
+
+pub fn recursive_sequential(runner: impl Runner, max_depth: usize) {
+    fn inner(runner: impl Runner, cown: Arc<Cown<usize>>, sender: Sender<()>, max_depth: usize, depth: usize) {
+        if depth == max_depth {
+            runner.when(cown, move |c| {
+                assert_eq!(*c, 100 + depth);
+                sender.send(()).unwrap();
+            })
+        } else {
+            runner.when(cown.clone(), {
+                let runner = runner.clone();
+                move |mut c| {
+                    assert_eq!(*c, 100 + depth);
+                    *c += 1;
+                    inner(runner, cown, sender, max_depth, depth + 1);
+                }
+            });
+        }
+    }
+    let cown = Arc::new(Cown::new(100));
+    let (sender, receiver) = channel();
+    inner(runner, cown, sender, max_depth - 1, 0);
+    receiver.recv().unwrap();
+}
+
+pub fn recursive_shuffle<>(runner: impl Runner, max_depth: usize) {
+    const WIDTH: usize = 4;
+    const COUNT: usize = 64;
+    struct List {
+        local: usize,
+        previous: Option<Arc<List>>,
+    }
+    impl List {
+        pub fn id(&self) -> usize {
+            if let Some(previous) = &self.previous {
+                previous.id() * (WIDTH + 1) + self.local
+            } else {
+                self.local
+            }
+        }
+    }
+    fn recurse(
+        runner: impl Runner,
+        cowns: Arc<[Arc<Cown<Vec<usize>>>]>,
+        sender: Sender<()>,
+        mut rng: SmallRng,
+        depth: usize,
+        max_depth: usize,
+        previous: Option<Arc<List>>
+    ) {
+        for i in 1..=WIDTH {
+            let ident = Arc::new(List { local: i, previous: previous.clone() });
+            let id = ident.id();
+            let len = (rng.gen_range(1..=(COUNT/2).pow(2)) as f32).sqrt() as usize;
+            let vec = cowns.choose_multiple(&mut rng, len).cloned().collect::<Vec<_>>();
+            if depth == max_depth {
+                let sender = sender.clone();
+                runner.when(vec, move |cowns| {
+                    for mut cown in cowns {
+                        cown.push(id);
+                    }
+                    sender.send(()).unwrap();
+                });
+            } else {
+                let sender = sender.clone();
+                let cowns = cowns.clone();
+                let rng = SmallRng::from_rng(&mut rng).unwrap();
+                runner.when(vec, {
+                    let runner = runner.clone();
+                    move |mut current| {
+                        recurse(runner, cowns.clone(), sender, rng, depth + 1, max_depth, Some(ident));
+                        for cown in &mut current {
+                            cown.push(id);
+                        }
+                    }
+                })
+            }
+        }
+    }
+    let cowns = (0..COUNT).map(|_| Arc::new(Cown::new(Vec::<usize>::new()))).collect::<Vec<_>>();
+    let (sender, receiver) = channel();
+    recurse(runner, cowns.into(), sender, SmallRng::seed_from_u64(123), 1, max_depth, None);
+    for _ in 0..WIDTH.pow(max_depth as _) {
+        receiver.recv().unwrap();
+    }
 }
