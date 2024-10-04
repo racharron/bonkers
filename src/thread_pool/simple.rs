@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering as AtomicOrd};
 use std::mem::take;
 use crate::{Backoff, ThreadPool};
 
+/// A simple threadpool
 pub struct SimpleThreadPool {
     shared: Arc<SimpleThreadPoolShared>,
     threads: Mutex<Vec<JoinHandle<()>>>,
@@ -18,7 +19,6 @@ struct SimpleThreadPoolShared {
     parked_on_shutdown: Mutex<Vec<Thread>>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
 #[repr(isize)]
 enum MyThreadPoolState {
     Running = 0,

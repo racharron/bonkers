@@ -3,6 +3,7 @@ use std::thread::{yield_now, Builder, JoinHandle};
 use std::mem::take;
 use crate::ThreadPool;
 
+/// A mock threadpool that simply creates a new OS thread for each task.
 pub struct OsThreads {
     threads: Mutex<Vec<JoinHandle<()>>>,
 }
