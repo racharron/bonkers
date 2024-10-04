@@ -1,4 +1,64 @@
 //! A pure rust implementation of [Behavior Oriented Concurrency](https://doi.org/10.1145/3622852).
+//!
+//! Provides two simple threadpool implementations to be used, along with optional support for
+//! [rayon](https://crates.io/crates/rayon) and
+//! [threadpool](https://crates.io/crates/threadpool), which are activated by features of the same
+//! name.
+//!
+//! ## Example
+//! ```rust
+//! # mod some { pub mod path { pub use bonkers::OsThreads as SomeThreadPool; } }
+//! use bonkers::ThreadPool;
+//! use some::path::SomeThreadPool;
+//! use bonkers::{Cown, Runner};
+//!
+//! use std::sync::Arc;
+//! use std::sync::atomic::{AtomicUsize, Ordering};
+//! use std::sync::mpsc::channel;
+//!
+//!
+//! let pool = Arc::new(SomeThreadPool::new());
+//! let a = Arc::new(Cown::new(100));
+//! let b = Arc::new(Cown::new(200));
+//! let c = Arc::new(Cown::new(300));
+//! let counter = Arc::new(AtomicUsize::new(0));
+//!
+//! pool.when((a.clone(), b.clone()), {
+//!     let counter = counter.clone();
+//!     move |(mut a, mut b)| {
+//!         assert_eq!(counter.fetch_add(1, Ordering::AcqRel), 0);
+//!         assert_eq!(*a, 100);
+//!         assert_eq!(*b, 200);
+//!         *a += 1;
+//!         *b += 1;
+//!     }
+//! });
+//! pool.when((b.clone(), c.clone()), {
+//!     let counter = counter.clone();
+//!     move |(mut b, mut c)| {
+//!         assert_eq!(counter.fetch_add(1, Ordering::AcqRel), 1);
+//!         assert_eq!(*b, 201);
+//!         assert_eq!(*c, 300);
+//!         *b += 1;
+//!         *c += 1;
+//!     }
+//! });
+//! let (sender, receiver) = channel();
+//! pool.when((a, b, c), {
+//!     let counter = counter.clone();
+//!     move |(a, b, c)| {
+//!         assert_eq!(counter.fetch_add(1, Ordering::AcqRel), 2);
+//!         assert_eq!(*a, 101);
+//!         assert_eq!(*b, 202);
+//!         assert_eq!(*c, 301);
+//!         sender.send(()).unwrap();
+//!     }
+//! });
+//! receiver.recv().unwrap();
+//! assert_eq!(counter.load(Ordering::Acquire), 3);
+//! ```
+
+#![deny(missing_docs)]
 
 use std::convert::identity;
 use std::iter::{empty, once};
@@ -46,7 +106,20 @@ impl Backoff {
 /// A pointer to a threadpool that can be cloned without lifetime concerns and sent around to other
 /// threads.  The classic examples are and `Arc<ThreadPool>` or `&'static ThreadPool`.
 pub trait Runner: Deref<Target = Self::ThreadPool> + Clone + Send + Sync + 'static {
+    /// Needed to keep the type system happy.
     type ThreadPool: ThreadPool;
+    /// Queue a task to be run when the `cown`s are available.  Note that the resolution algorithm
+    /// for scheduling thunks is deliberately simple, so
+    ///
+    /// ```ignore
+    /// let pool = SomeThreadPool::new();
+    /// let [a, b, c, d]: [Arc<Cown<Something>>; 4] = ...;
+    /// pool.when((a, b), |_| ...); //  Task 1
+    /// pool.when((b, c), |_| ...); //  Task 2
+    /// pool.when((c, d), |_| ...); //  Task 3
+    /// ```
+    /// will have all three tasks run in sequence, even though the required `cown`s of tasks 1 and 3
+    /// do not overlap.
     fn when<CC, T>(&self, cowns: CC, thunk: T)
     where
         CC: CownCollection,
@@ -103,11 +176,13 @@ trait CownBase {
 
 /// Needed to work around an issue with Rust's trait system.  Effectively part of [`CownCollection`].
 pub trait CownCollectionSuper: Send + Sync + 'static {
+    /// The guard protecting the internal mutex(es).
     type Guard<'a>;
 }
 
 /// Indicates that a type is a collection of [`Cown`]s and can be locked together.
 pub trait CownCollection: CownCollectionSuper {
+    /// Get the locks of the cowns in the collection.  Structurally mirrors the collection.
     fn lock(&self) -> Self::Guard<'_>;
     #[doc(hidden)]
     #[allow(private_interfaces)]
@@ -234,23 +309,21 @@ unsafe impl<T: Sync> Sync for Cown<T> {}
 // impl<T> UnwindSafe for Cown<T> {}
 
 impl<T> Cown<T> {
+    /// Create a new `cown`.
     pub const fn new(value: T) -> Self {
         Cown {
             last: AtomicPtr::new(null_mut()),
             data: Mutex::new(value),
         }
     }
+    /// Extracts the inner data from the `cown`.
     pub fn into_inner(self) -> LockResult<T> {
         self.data.into_inner()
     }
+    /// Returns a mutable reference to the underlying data.  In practice, forwarded to the internal
+    /// mutex.
     pub fn get_mut(&mut self) -> LockResult<&mut T> {
         self.data.get_mut()
-    }
-    pub fn try_with<U, F: for<'a> FnOnce(&'a T) -> U>(&self, f: F) -> Option<U> {
-        self.data.try_lock().map(|guard| f(&*guard)).ok()
-    }
-    pub fn try_with_mut<U, F: for<'a> FnOnce(&'a mut T) -> U>(&self, f: F) -> Option<U> {
-        self.data.try_lock().map(|mut guard| f(&mut *guard)).ok()
     }
 }
 

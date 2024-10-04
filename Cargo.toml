@@ -2,6 +2,9 @@
 name = "bonkers"
 version = "0.1.0"
 edition = "2021"
+description = "An implementation of behavior oriented concurrency"
+resolver = "2"
+keywords = ["concurrency", "cown", "behavior", "threadpool"]
 
 [features]
 rayon = ["dep:rayon-core"]
@@ -10,3 +13,6 @@ threadpool = ["dep:threadpool"]
 [dependencies]
 rayon-core = { version =  "1", optional = true }
 threadpool = { version = "1", optional = true }
+
+[package.metadata.docs.rs]
+all-features = true

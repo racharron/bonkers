@@ -9,6 +9,7 @@ pub struct OsThreads {
 }
 
 impl OsThreads {
+    /// Create a new threadpool.  This does not create any threads.
     pub fn new() -> Self {
         Self {
             threads: Mutex::new(Vec::new()),
