@@ -1,5 +1,5 @@
 use std::sync::{Mutex, MutexGuard};
-use std::thread::{yield_now, Builder, JoinHandle};
+use std::thread::{Builder, JoinHandle};
 use std::mem::take;
 use crate::ThreadPool;
 
@@ -49,8 +49,8 @@ impl ThreadPool for OsThreads {
         );
     }
 
-    fn yield_here(&self) {
+    fn yield_here(&self) -> bool {
         drop(self.remove_done());
-        yield_now()
+        false
     }
 }

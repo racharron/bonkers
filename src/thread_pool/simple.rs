@@ -137,12 +137,13 @@ impl ThreadPool for SimpleThreadPool {
     }
 
 
-    fn yield_here(&self) {
+    fn yield_here(&self) -> bool {
         let task = self.shared.tasks.lock().unwrap().pop_front();
         if let Some(task) = task {
             task();
+            true
         } else {
-            yield_now()
+            false
         }
     }
 }

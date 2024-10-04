@@ -44,6 +44,8 @@ impl Backoff {
     }
 }
 
+/// A pointer to a threadpool that can be cloned without lifetime concerns and sent around to other
+/// threads.  The classic examples are and `Arc<ThreadPool>` or `&'static ThreadPool`.
 pub trait Runner: Deref<Target = Self::ThreadPool> + Clone + Send + Sync + 'static {
     type ThreadPool: ThreadPool;
     fn when<CC, T>(&self, cowns: CC, thunk: T)
