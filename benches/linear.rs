@@ -1,73 +1,54 @@
 use std::sync::Arc;
+use std::time::Duration;
 use bonkers::{Cown, OsThreads, SimpleThreadPool, Runner};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 
-fn main() {
-    divan::main();
+const SIZES: [usize; 13] = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096];
+const MAX_THREADS: usize = 10;
+
+criterion_group!(linear, os, simple, rayon, tp);
+criterion_main!(linear);
+
+fn run<R: Runner>(c: &mut Criterion, runner: R, name: &str) {
+    let mut group = c.benchmark_group(name);
+    for size in SIZES {
+        group.warm_up_time(Duration::from_millis(500));
+        group.throughput(Throughput::Elements(size as u64));
+        let runner = runner.clone();
+        let cown = Arc::new(Cown::new(2 * size));
+        group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, &size| {
+            b.iter(|| for _ in 0..size { runner.when(cown.clone(), move |mut cown| *cown += 1) })
+        });
+    }
+    group.finish();
 }
 
-#[divan::bench(
-    args = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096]
-)]
-fn os(bencher: divan::Bencher, n: usize) {
+
+fn os(c: &mut Criterion) {
     let pool = Arc::new(OsThreads::new());
-    let cown = Arc::new(Cown::new(0));
-    bencher
-        .with_inputs(|| cown.clone())
-        .bench_values(move |cown| {
-            for i in 0..n {
-                pool.when(cown.clone(), move |mut cown| *cown += i);
-            }
-            cown
-        });
+    run(c, pool, "os_linear");
 }
 
-#[divan::bench(
-    consts = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-    args = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096]
-)]
-fn simple<const THREADS: usize>(bencher: divan::Bencher, n: usize) {
-    let pool = Arc::new(SimpleThreadPool::with_threads(THREADS.try_into().unwrap()));
-    let cown = Arc::new(Cown::new(0));
-    bencher
-        .with_inputs(|| cown.clone())
-        .bench_values(move |cown| {
-            for i in 0..n {
-                pool.when(cown.clone(), move |mut cown| *cown += i);
-            }
-            cown.clone()
-        });
+
+fn simple(c: &mut Criterion) {
+    for threads in 1..=MAX_THREADS {
+        let pool = Arc::new(SimpleThreadPool::with_threads(threads.try_into().unwrap()));
+        run(c, pool, &format!("simple_linear[{threads}]"))
+    }
 }
 
-#[divan::bench(
-    consts = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-    args = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096]
-)]
-fn rayon<const THREADS: usize>(bencher: divan::Bencher, n: usize) {
-    let pool = Arc::new(rayon_core::ThreadPoolBuilder::new().num_threads(THREADS).build().unwrap());
-    let cown = Arc::new(Cown::new(0));
-    bencher
-        .with_inputs(|| cown.clone())
-        .bench_values(move |cown| {
-            for i in 0..n {
-                pool.when(cown.clone(), move |mut cown| *cown += i);
-            }
-            cown.clone()
-        });
+
+fn rayon(c: &mut Criterion) {
+    for threads in 1..=MAX_THREADS {
+        let pool = Arc::new(rayon_core::ThreadPoolBuilder::new().num_threads(threads).build().unwrap());
+        run(c, pool, &format!("rayon_linear[{threads}]"))
+    }
 }
 
-#[divan::bench(
-    consts = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-    args = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096]
-)]
-fn tp<const THREADS: usize>(bencher: divan::Bencher, n: usize) {
-    let pool = Arc::new(threadpool::ThreadPool::new(THREADS));
-    let cown = Arc::new(Cown::new(0));
-    bencher
-        .with_inputs(|| cown.clone())
-        .bench_values(move |cown| {
-            for i in 0..n {
-                pool.when(cown.clone(), move |mut cown| *cown += i);
-            }
-            cown.clone()
-        });
+
+fn tp(c: &mut Criterion) {
+    for threads in 1..=MAX_THREADS {
+        let pool = Arc::new(threadpool::ThreadPool::new(threads));
+        run(c, pool, &format!("tp_linear[{threads}]"))
+    }
 }
