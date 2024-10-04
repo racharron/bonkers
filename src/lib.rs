@@ -95,18 +95,22 @@ const NULL: *mut Request = 0 as *mut _;
 /// TODO: check provenance (`offset` a no-provenance pointer is legal, but is `byte_offset`)?
 const POISONED: *mut Request = 1 as *mut _;
 
-pub trait CownBase {
+trait CownBase {
     #[doc(hidden)]
     #[allow(private_interfaces)]
     fn last(&self) -> *const AtomicPtr<Request>;
 }
 
+/// Needed to work around an issue with Rust's trait system.  Effectively part of [`CownCollection`].
 pub trait CownCollectionSuper: Send + Sync + 'static {
     type Guard<'a>;
 }
 
+/// Indicates that a type is a collection of [`Cown`]s and can be locked together.
 pub trait CownCollection: CownCollectionSuper {
     fn lock(&self) -> Self::Guard<'_>;
+    #[doc(hidden)]
+    #[allow(private_interfaces)]
     fn cown_bases(&self) -> impl IntoIterator<Item = &dyn CownBase>;
 }
 
@@ -269,6 +273,8 @@ macro_rules! ref_cown_collection {
                     self.data.lock().unwrap()
                 }
 
+                #[doc(hidden)]
+                #[allow(private_interfaces)]
                 fn cown_bases<'a>(&'a self) -> impl IntoIterator<Item=&'a dyn CownBase> {
                     once(&**self as &dyn CownBase)
                 }
@@ -288,7 +294,8 @@ impl<T: CownCollection, const N: usize> CownCollection for [T; N] {
     fn lock(&self) -> Self::Guard<'_> {
         self.each_ref().map(T::lock)
     }
-
+    #[doc(hidden)]
+    #[allow(private_interfaces)]
     fn cown_bases(&self) -> impl IntoIterator<Item = &dyn CownBase> {
         self.iter().flat_map(T::cown_bases)
     }
@@ -306,6 +313,8 @@ macro_rules! variadic_cown_collection {
                 #[allow(clippy::unused_unit)]
                 ($($v.lock(),)*)
             }
+            #[doc(hidden)]
+            #[allow(private_interfaces)]
             fn cown_bases(&self) -> impl IntoIterator<Item=&dyn CownBase> {
                 #![allow(non_snake_case)]
                 let ($(ref $v,)*) = self;
