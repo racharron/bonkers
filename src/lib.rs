@@ -251,12 +251,10 @@ impl<T> Cown<T> {
         self.data.get_mut()
     }
     pub fn try_with<U, F: for<'a> FnOnce(&'a T) -> U>(&self, f: F) -> Option<U> {
-        (!self.last.load(AtomicOrd::Acquire).is_null())
-            .then(|| f(&mut *self.data.try_lock().unwrap()))
+        self.data.try_lock().map(|guard| f(&*guard)).ok()
     }
     pub fn try_with_mut<U, F: for<'a> FnOnce(&'a mut T) -> U>(&self, f: F) -> Option<U> {
-        (!self.last.load(AtomicOrd::Acquire).is_null())
-            .then(|| f(&mut *self.data.try_lock().unwrap()))
+        self.data.try_lock().map(|mut guard| f(&mut *guard)).ok()
     }
 }
 

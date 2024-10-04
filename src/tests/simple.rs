@@ -28,5 +28,13 @@ fn sequential_1() {
 #[test]
 fn indirect_seq() {
     let pool = Arc::new(SimpleThreadPool::with_threads(NonZeroUsize::new(4).unwrap()));
+    util::indirect_seq(pool.clone());
+    pool.shutdown();
+}
 
+#[test]
+fn triangle() {
+    let pool = Arc::new(SimpleThreadPool::with_threads(NonZeroUsize::new(4).unwrap()));
+    util::triangle(pool.clone());
+    pool.shutdown();
 }

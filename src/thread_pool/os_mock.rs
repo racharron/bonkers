@@ -15,6 +15,15 @@ impl OsThreads {
         }
     }
 
+    /// Wait for all outstanding tasks to complete.  Will not wait for any new tasks added during
+    /// this method call.
+    pub fn join(&self) {
+        for thread in take(&mut *self.threads.lock().unwrap()) {
+            thread.join().unwrap();
+        }
+
+    }
+
     fn remove_done(&self) -> MutexGuard<Vec<JoinHandle<()>>> {
         let mut guard = self.threads.lock().unwrap();
         let old_threads = take(&mut *guard);

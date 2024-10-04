@@ -8,6 +8,5 @@ rayon = ["dep:rayon-core"]
 threadpool = ["dep:threadpool"]
 
 [dependencies]
-log = "0.4.22"
 rayon-core = { version =  "1", optional = true }
 threadpool = { version = "1", optional = true }
