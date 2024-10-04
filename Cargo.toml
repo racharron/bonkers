@@ -3,6 +3,11 @@ name = "bonkers"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+rayon = ["dep:rayon-core"]
+threadpool = ["dep:threadpool"]
+
 [dependencies]
 log = "0.4.22"
-rayon-core = "1"
+rayon-core = { version =  "1", optional = true }
+threadpool = { version = "1", optional = true }

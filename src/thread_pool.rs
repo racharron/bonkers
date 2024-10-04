@@ -1,5 +1,9 @@
 mod simple;
 mod os_mock;
+#[cfg(feature = "rayon")]
+mod rayon;
+#[cfg(feature = "threadpool")]
+mod threadpool;
 
 pub use simple::SimpleThreadPool;
 pub use os_mock::OsThreads;

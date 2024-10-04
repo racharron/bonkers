@@ -14,7 +14,7 @@ pub use std::sync::mpsc::channel;
 mod tests;
 
 mod thread_pool;
-pub use thread_pool::{SimpleThreadPool, ThreadPool, OsThreads};
+pub use thread_pool::*;
 
 /// Basically taken from `crossbeam`.
 struct Backoff {
