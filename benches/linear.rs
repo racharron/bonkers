@@ -51,5 +51,5 @@ fn rayon(c: &mut Criterion) {
 
 
 fn tp(c: &mut Criterion) {
-    util::run(c, "tp_linear", |threads| Arc::new(threadpool::ThreadPool::new(threads)), bench);
+    util::run(c, "tp_linear", threadpool::ThreadPool::new, bench);
 }

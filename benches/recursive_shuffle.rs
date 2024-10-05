@@ -71,5 +71,5 @@ fn rayon(c: &mut Criterion) {
 
 
 fn tp(c: &mut Criterion) {
-    run(c, "tp_recursive_shuffle", |threads| Arc::new(threadpool::ThreadPool::new(threads)));
+    run(c, "tp_recursive_shuffle", threadpool::ThreadPool::new);
 }

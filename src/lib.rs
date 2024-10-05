@@ -63,7 +63,6 @@
 use std::collections::{LinkedList, VecDeque};
 use std::convert::identity;
 use std::iter::{empty, once};
-use std::ops::Deref;
 use std::ptr::null_mut;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering as AtomicOrd};
 use std::sync::{Arc, LockResult, Mutex, MutexGuard};
@@ -106,51 +105,69 @@ impl Backoff {
 
 /// A pointer to a threadpool that can be cloned without lifetime concerns and sent around to other
 /// threads.  The classic examples are and `Arc<ThreadPool>` or `&'static ThreadPool`.
-pub trait Runner: Deref<Target = Self::ThreadPool> + Clone + Send + Sync + 'static {
+pub trait Runner: Clone + Send + Sync + 'static {
     /// Needed to keep the type system happy.
     type ThreadPool: ThreadPool;
-    /// Queue a task to be run when the `cown`s are available.  Note that the resolution algorithm
-    /// for scheduling thunks is deliberately simple, so
-    ///
-    /// ```ignore
-    /// let pool = SomeThreadPool::new();
-    /// let [a, b, c, d]: [Arc<Cown<Something>>; 4] = ...;
-    /// pool.when((a, b), |_| ...); //  Task 1
-    /// pool.when((b, c), |_| ...); //  Task 2
-    /// pool.when((c, d), |_| ...); //  Task 3
-    /// ```
-    /// will have all three tasks run in sequence, even though the required `cown`s of tasks 1 and 3
-    /// do not overlap.
+    /// Queue a task to be run when the `cown`s are available.  See [`when`] for more details.
     fn when<CC, T>(&self, cowns: CC, thunk: T)
     where
         CC: CownCollection,
-        T: for<'a> FnOnce(CC::Guard<'a>) + Send + Sync + 'static,
-        Self: 'static;
+        T: for<'a> FnOnce(CC::Guard<'a>) + Send + Sync + 'static;
+    /// Returns a reference to the threadpool.
+    fn threadpool(&self) -> &Self::ThreadPool;
 }
 
-impl<TP: ThreadPool, P: Deref<Target = TP> + Clone + Send + Sync + 'static> Runner for P {
+/// Queue a task to be run on a runner when the `cown`s are available.  Note that the resolution algorithm
+/// for scheduling thunks is deliberately simple, so
+///
+/// ```ignore
+/// let pool = SomeThreadPool::new();
+/// let [a, b, c, d]: [Arc<Cown<Something>>; 4] = ...;
+/// pool.when((a, b), |_| ...); //  Task 1
+/// pool.when((b, c), |_| ...); //  Task 2
+/// pool.when((c, d), |_| ...); //  Task 3
+/// ```
+/// will have all three tasks run in sequence, even though the required `cown`s of tasks 1 and 3 do not overlap.
+pub fn when<R: Runner, CC: CownCollection, T: for<'a> FnOnce(CC::Guard<'a>) + Send + Sync + 'static>(runner: &R, cowns: CC, thunk: T) {
+    let mut cown_vec = Vec::from_iter(cowns.cown_bases());
+    cown_vec.sort_unstable_by_key(|&cbr| cbr as *const _ as *const () as usize);
+    cown_vec
+        .windows(2)
+        .for_each(|cbs| assert_ne!(cbs[0] as *const _ as *const () as usize, cbs[1] as *const _ as *const () as usize));
+    let requests = Vec::from_iter(cown_vec.iter().cloned().map(Request::new));
+    let behavior = Box::into_raw(Behavior::new(requests, (cowns, Some(thunk))));
+    unsafe {
+        for i in 0..(*behavior).requests.len() {
+            Request::start_appending((*behavior).requests.as_ptr().add(i), behavior, runner);
+        }
+        for request in &(*behavior).requests {
+            request.finish_appending();
+        }
+    }
+    Behavior::resolve_one(behavior, runner);
+}
+
+impl<TP: ThreadPool + Sync> Runner for &'static TP {
     type ThreadPool = TP;
 
-    fn when<CC: CownCollection, T: for<'a> FnOnce(CC::Guard<'a>) + Send + Sync + 'static>(&self, cowns: CC, thunk: T)
-    where
-        Self: 'static,
-    {
-        let mut cown_vec = Vec::from_iter(cowns.cown_bases());
-        cown_vec.sort_unstable_by_key(|&cbr| cbr as *const _ as *const () as usize);
-        cown_vec
-            .windows(2)
-            .for_each(|cbs| assert_ne!(cbs[0] as *const _ as *const () as usize, cbs[1] as *const _ as *const () as usize));
-        let requests = Vec::from_iter(cown_vec.iter().cloned().map(Request::new));
-        let behavior = Box::into_raw(Behavior::new(requests, (cowns, Some(thunk))));
-        unsafe {
-            for i in 0..(*behavior).requests.len() {
-                Request::start_appending((*behavior).requests.as_ptr().add(i), behavior, self);
-            }
-            for request in &(*behavior).requests {
-                request.finish_appending();
-            }
-        }
-        Behavior::resolve_one(behavior, self);
+    fn when<CC: CownCollection, T: for<'a> FnOnce(CC::Guard<'a>) + Send + Sync + 'static>(&self, cowns: CC, thunk: T) {
+        when(self, cowns, thunk)
+    }
+
+    fn threadpool(&self) -> &Self::ThreadPool {
+        self
+    }
+}
+
+impl<TP: ThreadPool + Sync + Send + 'static> Runner for Arc<TP> {
+    type ThreadPool = TP;
+
+    fn when<CC: CownCollection, T: for<'a> FnOnce(CC::Guard<'a>) + Send + Sync + 'static>(&self, cowns: CC, thunk: T) {
+        when(self, cowns, thunk)
+    }
+
+    fn threadpool(&self) -> &Self::ThreadPool {
+        &*self
     }
 }
 
@@ -291,7 +308,7 @@ impl Behavior {
             let behavior = &*this;
             if behavior.count.fetch_sub(1, AtomicOrd::AcqRel) == 1 {
                 let mut behavior = Box::from_raw(this);
-                runner.run({
+                runner.threadpool().run({
                     let runner = runner.clone();
                     move || {
                         behavior.thunk.consume_boxed_and_release();
