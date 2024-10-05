@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::mpsc::channel;
 use std::time::Duration;
 use bonkers::{Cown, OsThreads, SimpleThreadPool, Runner};
 use criterion::{criterion_group, criterion_main, AxisScale, BenchmarkId, Criterion, PlotConfiguration, Throughput};
@@ -18,7 +19,15 @@ fn run<R: Runner>(c: &mut Criterion, runner: R, name: &str) {
         let runner = runner.clone();
         let cown = Arc::new(Cown::new(2 * size));
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, &size| {
-            b.iter(|| for _ in 0..size { runner.when(cown.clone(), move |mut cown| *cown += 1) })
+            let (sender, receiver) = channel();
+            b.iter(|| {
+                for _ in 0..size {
+                    runner.when(cown.clone(), move |mut cown| *cown += 1)
+                }
+                let sender = sender.clone();
+                runner.when(cown.clone(), move |_| sender.send(()).unwrap());
+                receiver.recv().unwrap();
+            })
         });
     }
     group.finish();
@@ -34,7 +43,8 @@ fn os(c: &mut Criterion) {
 fn simple(c: &mut Criterion) {
     for threads in 1..=MAX_THREADS {
         let pool = Arc::new(SimpleThreadPool::with_threads(threads.try_into().unwrap()));
-        run(c, pool, &format!("simple_linear[{threads}]"))
+        run(c, pool.clone(), &format!("simple_linear[{threads}]"));
+        pool.shutdown();
     }
 }
 

@@ -17,7 +17,7 @@ rayon-core = { version =  "1", optional = true }
 threadpool = { version = "1", optional = true }
 
 [dev-dependencies]
-criterion = "0.5"
+criterion = { version = "0.5", default-features = false, features = ["plotters", "cargo_bench_support"] }
 rand = { version = "0.8", features = ["small_rng"] }
 
 [[bench]]

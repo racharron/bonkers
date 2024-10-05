@@ -204,14 +204,16 @@ pub fn recursive_shuffle<>(runner: impl Runner, max_depth: usize) {
             } else {
                 let sender = sender.clone();
                 let cowns = cowns.clone();
+                let sender = sender.clone();
                 let rng = SmallRng::from_rng(&mut rng).unwrap();
                 runner.when(vec, {
                     let runner = runner.clone();
                     move |mut current| {
-                        recurse(runner, cowns.clone(), sender, rng, depth + 1, max_depth, Some(ident));
+                        recurse(runner, cowns.clone(), sender.clone(), rng, depth + 1, max_depth, Some(ident));
                         for cown in &mut current {
                             cown.push(id);
                         }
+                        sender.send(()).unwrap();
                     }
                 })
             }
@@ -220,7 +222,7 @@ pub fn recursive_shuffle<>(runner: impl Runner, max_depth: usize) {
     let cowns = (0..COUNT).map(|_| Arc::new(Cown::new(Vec::<usize>::new()))).collect::<Vec<_>>();
     let (sender, receiver) = channel();
     recurse(runner, cowns.into(), sender, SmallRng::seed_from_u64(123), 1, max_depth, None);
-    for _ in 0..WIDTH.pow(max_depth as _) {
+    for _ in 0..(1..=max_depth).map(|d| WIDTH.pow(d as _)).sum() {
         receiver.recv().unwrap();
     }
 }

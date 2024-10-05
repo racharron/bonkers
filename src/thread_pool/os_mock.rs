@@ -67,3 +67,9 @@ impl ThreadPool for OsThreads {
         threads.push(Builder::new().name(format!("OsThreads Task {count}")).spawn(task).unwrap());
     }
 }
+
+impl Drop for OsThreads {
+    fn drop(&mut self) {
+        self.join()
+    }
+}

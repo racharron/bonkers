@@ -6,7 +6,8 @@ use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering as AtomicOrd};
 use std::sync::{Arc, Mutex};
 use std::thread::{current, park, yield_now, Builder, JoinHandle, Thread};
 
-/// A simple threadpool.  Internally implemented with a [`Mutex`] of [`VecDeque`]s.
+/// A simple threadpool.  Internally implemented with a [`Mutex`] of [`VecDeque`]s.  Shuts down
+/// when dropped.
 pub struct SimpleThreadPool {
     shared: Arc<SimpleThreadPoolShared>,
     threads: Mutex<Vec<JoinHandle<()>>>,
@@ -153,5 +154,11 @@ impl SimpleThreadPool {
 impl ThreadPool for SimpleThreadPool {
     fn run<T: FnOnce() + Send + Sync + 'static>(&self, task: T) {
         self.shared.tasks.lock().unwrap().push_back(Box::new(task));
+    }
+}
+
+impl Drop for SimpleThreadPool {
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }

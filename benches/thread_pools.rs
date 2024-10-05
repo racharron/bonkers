@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::mpsc::channel;
 use std::time::Duration;
 use bonkers::{OsThreads, SimpleThreadPool, ThreadPool};
 use criterion::{criterion_group, criterion_main, AxisScale, BenchmarkId, Criterion, PlotConfiguration, Throughput};
@@ -19,7 +20,16 @@ fn run<TP: ThreadPool>(c: &mut Criterion, pool: TP, name: &str) {
         let pool = pool.clone();
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, move |b, &size| {
             let pool = pool.clone();
-            b.iter(move || for _ in 0..size { pool.run(|| {}) })
+            b.iter(move || {
+                let (sender, receiver) = channel();
+                for _ in 0..size {
+                    let sender = sender.clone();
+                    pool.run(move || sender.send(()).unwrap());
+                }
+                for _ in 0..size {
+                    receiver.recv().unwrap();
+                }
+            })
         });
     }
     group.finish();
