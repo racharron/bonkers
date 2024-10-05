@@ -1,7 +1,7 @@
 use crate::ThreadPool;
 use std::mem::take;
-use std::sync::{Mutex, MutexGuard};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, MutexGuard};
 use std::thread::{yield_now, Builder, JoinHandle};
 
 /// A mock threadpool that simply creates a new OS thread for each task.
@@ -32,7 +32,7 @@ impl OsThreads {
         loop {
             let guard = self.remove_done();
             if guard.is_empty() {
-                return
+                return;
             } else {
                 drop(guard);
                 yield_now();

@@ -1,10 +1,10 @@
+use crate::util::MAX_THREADS;
+#[allow(unused_imports)] // `util` needs `Cown` to be imported, but this is not recognized while compiling.
+use bonkers::{Cown, OsThreads, Runner, SimpleThreadPool};
+use criterion::measurement::WallTime;
+use criterion::{criterion_group, criterion_main, AxisScale, BenchmarkGroup, BenchmarkId, Criterion, PlotConfiguration, Throughput};
 use std::sync::Arc;
 use std::time::Duration;
-#[allow(unused_imports)] // `util` needs `Cown` to be imported, but this is not recognized while compiling.
-use bonkers::{OsThreads, SimpleThreadPool, Runner, Cown};
-use criterion::{criterion_group, criterion_main, AxisScale, BenchmarkGroup, BenchmarkId, Criterion, PlotConfiguration, Throughput};
-use criterion::measurement::WallTime;
-use crate::util::MAX_THREADS;
 
 #[allow(unused)]
 mod util;
@@ -26,7 +26,10 @@ fn run<R: Runner, F: Fn(usize) -> R>(c: &mut Criterion, name: &str, new: F) {
         let runner = new(threads);
         for max_depth in 1..=MAX_DEPTH {
             group.throughput(Throughput::Elements(size(max_depth)));
-            let benchmark_id = BenchmarkId::new(if threads == 1 { "1 Thread".to_string() } else { format!("{threads} threads") }, size(max_depth));
+            let benchmark_id = BenchmarkId::new(
+                if threads == 1 { "1-thread".to_string() } else { format!("{threads}-threads") },
+                size(max_depth),
+            );
             bench(&mut group, max_depth as _, &runner, benchmark_id);
         }
     }
@@ -46,7 +49,6 @@ fn bench<R: Runner>(group: &mut BenchmarkGroup<WallTime>, max_depth: usize, runn
     });
 }
 
-
 fn os(c: &mut Criterion) {
     let runner = Arc::new(OsThreads::new());
     let mut group = c.benchmark_group("os_recursive_shuffle");
@@ -59,16 +61,17 @@ fn os(c: &mut Criterion) {
     group.finish();
 }
 
-
 fn simple(c: &mut Criterion) {
-    run(c, "simple_recursive_shuffle", |threads| Arc::new(SimpleThreadPool::with_threads(threads.try_into().unwrap())));
+    run(c, "simple_recursive_shuffle", |threads| {
+        Arc::new(SimpleThreadPool::with_threads(threads.try_into().unwrap()))
+    });
 }
-
 
 fn rayon(c: &mut Criterion) {
-    run(c, "rayon_recursive_shuffle", |threads| Arc::new(rayon_core::ThreadPoolBuilder::new().num_threads(threads).build().unwrap()));
+    run(c, "rayon_recursive_shuffle", |threads| {
+        Arc::new(rayon_core::ThreadPoolBuilder::new().num_threads(threads).build().unwrap())
+    });
 }
-
 
 fn tp(c: &mut Criterion) {
     run(c, "tp_recursive_shuffle", threadpool::ThreadPool::new);

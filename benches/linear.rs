@@ -1,9 +1,9 @@
-use std::sync::Arc;
-use std::sync::mpsc::channel;
-use std::time::Duration;
-use bonkers::{Cown, OsThreads, SimpleThreadPool, Runner};
-use criterion::{criterion_group, criterion_main, AxisScale, BenchmarkGroup, BenchmarkId, Criterion, PlotConfiguration, Throughput};
+use bonkers::{Cown, OsThreads, Runner, SimpleThreadPool};
 use criterion::measurement::WallTime;
+use criterion::{criterion_group, criterion_main, AxisScale, BenchmarkGroup, BenchmarkId, Criterion, PlotConfiguration, Throughput};
+use std::sync::mpsc::channel;
+use std::sync::Arc;
+use std::time::Duration;
 
 mod util;
 
@@ -39,16 +39,23 @@ fn os(c: &mut Criterion) {
     group.finish();
 }
 
-
 fn simple(c: &mut Criterion) {
-    util::run(c, "simple_linear", |threads| Arc::new(SimpleThreadPool::with_threads(threads.try_into().unwrap())), bench);
+    util::run(
+        c,
+        "simple_linear",
+        |threads| Arc::new(SimpleThreadPool::with_threads(threads.try_into().unwrap())),
+        bench,
+    );
 }
-
 
 fn rayon(c: &mut Criterion) {
-    util::run(c, "rayon_linear", |threads| Arc::new(rayon_core::ThreadPoolBuilder::new().num_threads(threads).build().unwrap()), bench);
+    util::run(
+        c,
+        "rayon_linear",
+        |threads| Arc::new(rayon_core::ThreadPoolBuilder::new().num_threads(threads).build().unwrap()),
+        bench,
+    );
 }
-
 
 fn tp(c: &mut Criterion) {
     util::run(c, "tp_linear", threadpool::ThreadPool::new, bench);

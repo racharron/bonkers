@@ -1,10 +1,10 @@
 use crate::{Cown, Runner};
+use rand::prelude::SliceRandom;
+use rand::rngs::SmallRng;
+use rand::{Rng, SeedableRng};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, MutexGuard};
-use rand::prelude::SliceRandom;
-use rand::{Rng, SeedableRng};
-use rand::rngs::SmallRng;
 
 pub fn when_none_simple(runner: impl Runner) {
     let (sender, receiver) = channel();
@@ -163,7 +163,7 @@ pub fn recursive_sequential(runner: impl Runner, max_depth: usize) {
     receiver.recv().unwrap();
 }
 
-pub fn recursive_shuffle<>(runner: impl Runner, max_depth: usize) {
+pub fn recursive_shuffle(runner: impl Runner, max_depth: usize) {
     const WIDTH: usize = 4;
     const COUNT: usize = 64;
     struct List {
@@ -186,12 +186,15 @@ pub fn recursive_shuffle<>(runner: impl Runner, max_depth: usize) {
         mut rng: SmallRng,
         depth: usize,
         max_depth: usize,
-        previous: Option<Arc<List>>
+        previous: Option<Arc<List>>,
     ) {
         for i in 1..=WIDTH {
-            let ident = Arc::new(List { local: i, previous: previous.clone() });
+            let ident = Arc::new(List {
+                local: i,
+                previous: previous.clone(),
+            });
             let id = ident.id();
-            let len = (rng.gen_range(1..=(COUNT/2).pow(2)) as f32).sqrt() as usize;
+            let len = (rng.gen_range(1..=(COUNT / 2).pow(2)) as f32).sqrt() as usize;
             let vec = cowns.choose_multiple(&mut rng, len).cloned().collect::<Vec<_>>();
             if depth == max_depth {
                 let sender = sender.clone();

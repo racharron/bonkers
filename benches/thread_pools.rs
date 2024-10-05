@@ -1,8 +1,8 @@
+use bonkers::{OsThreads, SimpleThreadPool, ThreadPool};
+use criterion::measurement::WallTime;
+use criterion::{criterion_group, criterion_main, AxisScale, BenchmarkGroup, BenchmarkId, Criterion, PlotConfiguration, Throughput};
 use std::sync::mpsc::channel;
 use std::time::Duration;
-use bonkers::{OsThreads, SimpleThreadPool, ThreadPool};
-use criterion::{criterion_group, criterion_main, AxisScale, BenchmarkGroup, BenchmarkId, Criterion, PlotConfiguration, Throughput};
-use criterion::measurement::WallTime;
 use util::SIZES;
 
 mod util;
@@ -43,7 +43,12 @@ fn simple_nop(c: &mut Criterion) {
 }
 
 fn rayon_nop(c: &mut Criterion) {
-    util::run(c, "rayon_nop", |threads| rayon_core::ThreadPoolBuilder::new().num_threads(threads).build().unwrap(), bench);
+    util::run(
+        c,
+        "rayon_nop",
+        |threads| rayon_core::ThreadPoolBuilder::new().num_threads(threads).build().unwrap(),
+        bench,
+    );
 }
 
 fn tp_nop(c: &mut Criterion) {

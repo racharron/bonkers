@@ -12,7 +12,7 @@ impl crate::Runner for threadpool::ThreadPool {
     fn when<CC, T>(&self, cowns: CC, thunk: T)
     where
         CC: CownCollection,
-        T: for<'a> FnOnce(CC::Guard<'a>) + Send + Sync + 'static
+        T: for<'a> FnOnce(CC::Guard<'a>) + Send + Sync + 'static,
     {
         when(self, cowns, thunk);
     }
