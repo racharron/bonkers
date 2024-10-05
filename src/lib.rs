@@ -60,13 +60,14 @@
 
 #![deny(missing_docs)]
 
+use std::cell::UnsafeCell;
 use std::collections::{LinkedList, VecDeque};
 use std::convert::identity;
 use std::iter::{empty, once};
 use std::ops::Deref;
 use std::ptr::null_mut;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering as AtomicOrd};
-use std::sync::{Arc, LockResult, Mutex, MutexGuard};
+use std::sync::{Arc, LockResult};
 use std::thread::yield_now;
 
 #[cfg(test)]
@@ -157,7 +158,7 @@ impl<TP: ThreadPool, P: Deref<Target = TP> + Clone + Send + Sync + 'static> Runn
 /// A mutex where multiple mutexes can be locked in parallel.
 pub struct Cown<T> {
     last: AtomicPtr<Request>,
-    data: Mutex<T>,
+    data: UnsafeCell<T>,
 }
 
 /// Null pointer.
@@ -314,17 +315,12 @@ impl<T> Cown<T> {
     pub const fn new(value: T) -> Self {
         Cown {
             last: AtomicPtr::new(null_mut()),
-            data: Mutex::new(value),
+            data: UnsafeCell::new(value),
         }
     }
     /// Extracts the inner data from the `cown`.
     pub fn into_inner(self) -> LockResult<T> {
-        self.data.into_inner()
-    }
-    /// Returns a mutable reference to the underlying data.  In practice, forwarded to the internal
-    /// mutex.
-    pub fn get_mut(&mut self) -> LockResult<&mut T> {
-        self.data.get_mut()
+        Ok(self.data.into_inner())
     }
 }
 
@@ -340,11 +336,13 @@ macro_rules! ref_cown_collection {
     ( $v:ident => $( $t:ty ),+ )  =>  {
         $(
             impl<$v: Send + Sync + 'static> CownCollectionSuper for $t {
-                type Guard<'a> = MutexGuard<'a, T>;
+                type Guard<'a> = &'a mut T;
             }
             impl<$v: Send + Sync + 'static> CownCollection for $t {
                 fn lock(&self) -> Self::Guard<'_> {
-                    self.data.lock().unwrap()
+                    unsafe {
+                        &mut *UnsafeCell::raw_get(&self.data)
+                    }
                 }
 
                 #[doc(hidden)]

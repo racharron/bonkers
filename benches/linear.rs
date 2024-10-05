@@ -22,7 +22,7 @@ fn run<R: Runner>(c: &mut Criterion, runner: R, name: &str) {
             let (sender, receiver) = channel();
             b.iter(|| {
                 for _ in 0..size {
-                    runner.when(cown.clone(), move |mut cown| *cown += 1)
+                    runner.when(cown.clone(), move |cown| *cown += 1)
                 }
                 let sender = sender.clone();
                 runner.when(cown.clone(), move |_| sender.send(()).unwrap());
