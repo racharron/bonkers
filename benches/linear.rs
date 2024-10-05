@@ -16,7 +16,7 @@ fn bench<R: Runner>(group: &mut BenchmarkGroup<WallTime>, size: usize, runner: &
         let (sender, receiver) = channel();
         b.iter(|| {
             for _ in 0..size {
-                runner.when(cown.clone(), move |mut cown| *cown += 1)
+                runner.when(cown.clone(), move |cown| *cown += 1)
             }
             let sender = sender.clone();
             runner.when(cown.clone(), move |_| sender.send(()).unwrap());
