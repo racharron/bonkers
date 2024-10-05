@@ -1,10 +1,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 use bonkers::{Cown, OsThreads, SimpleThreadPool, Runner};
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, AxisScale, BenchmarkId, Criterion, PlotConfiguration, Throughput};
 
-const SIZES: [usize; 13] = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096];
-const MAX_THREADS: usize = 10;
+const SIZES: [usize; 11] = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024];
+const MAX_THREADS: usize = 8;
 
 criterion_group!(linear, os, simple, rayon, tp);
 criterion_main!(linear);
@@ -14,6 +14,7 @@ fn run<R: Runner>(c: &mut Criterion, runner: R, name: &str) {
     for size in SIZES {
         group.warm_up_time(Duration::from_millis(500));
         group.throughput(Throughput::Elements(size as u64));
+        group.plot_config(PlotConfiguration::default().summary_scale(AxisScale::Logarithmic));
         let runner = runner.clone();
         let cown = Arc::new(Cown::new(2 * size));
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, &size| {

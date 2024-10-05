@@ -1,13 +1,14 @@
 use std::sync::Arc;
 use std::time::Duration;
-use bonkers::{OsThreads, SimpleThreadPool, Runner};
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+#[allow(unused_imports)] // `util` needs `Cown` to be imported, but this is not recognized while compiling.
+use bonkers::{OsThreads, SimpleThreadPool, Runner, Cown};
+use criterion::{criterion_group, criterion_main, AxisScale, BenchmarkId, Criterion, PlotConfiguration, Throughput};
 
 #[path = "../src/tests/util.rs"]
 #[allow(unused)]
 mod util;
 
-const MAX_THREADS: usize = 10;
+const MAX_THREADS: usize = 8;
 
 criterion_group!(linear, os, simple, rayon, tp);
 criterion_main!(linear);
@@ -18,6 +19,7 @@ fn run<R: Runner>(c: &mut Criterion, runner: R, name: &str) {
     for depth in 1..=MAX_DEPTH {
         group.warm_up_time(Duration::from_millis(500));
         group.throughput(Throughput::Elements((1..=depth).map(|d| 4u64.pow(d)).sum()));
+        group.plot_config(PlotConfiguration::default().summary_scale(AxisScale::Logarithmic));
         let runner = runner.clone();
         group.bench_with_input(BenchmarkId::from_parameter(depth as u64), &depth, |b, &max_depth| {
             b.iter(|| util::recursive_shuffle(runner.clone(), max_depth as usize))

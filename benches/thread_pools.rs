@@ -1,10 +1,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 use bonkers::{OsThreads, SimpleThreadPool, ThreadPool};
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, AxisScale, BenchmarkId, Criterion, PlotConfiguration, Throughput};
 
-const SIZES: [usize; 13] = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096];
-const MAX_THREADS: usize = 10;
+const SIZES: [usize; 11] = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024];
+const MAX_THREADS: usize = 8;
 
 criterion_group!(thread_pools, os_nop, simple_nop, rayon_nop, tp_nop);
 criterion_main!(thread_pools);
@@ -15,6 +15,7 @@ fn run<TP: ThreadPool>(c: &mut Criterion, pool: TP, name: &str) {
     for size in SIZES {
         group.warm_up_time(Duration::from_millis(500));
         group.throughput(Throughput::Elements(size as u64));
+        group.plot_config(PlotConfiguration::default().summary_scale(AxisScale::Logarithmic));
         let pool = pool.clone();
         group.bench_with_input(BenchmarkId::from_parameter(size), &size, move |b, &size| {
             let pool = pool.clone();
