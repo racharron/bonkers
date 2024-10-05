@@ -60,12 +60,13 @@
 
 #![deny(missing_docs)]
 
+use std::cell::UnsafeCell;
 use std::collections::{LinkedList, VecDeque};
 use std::convert::identity;
 use std::iter::{empty, once};
 use std::ptr::null_mut;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering as AtomicOrd};
-use std::sync::{Arc, LockResult, Mutex, MutexGuard};
+use std::sync::{Arc, LockResult};
 use std::thread::yield_now;
 
 #[cfg(test)]
@@ -174,7 +175,7 @@ impl<TP: ThreadPool + Sync + Send + 'static> Runner for Arc<TP> {
 /// A mutex where multiple mutexes can be locked in parallel.
 pub struct Cown<T> {
     last: AtomicPtr<Request>,
-    data: Mutex<T>,
+    data: UnsafeCell<T>,
 }
 
 /// Null pointer.
@@ -201,7 +202,9 @@ pub trait CownCollectionSuper: Send + Sync + 'static {
 /// Indicates that a type is a collection of [`Cown`]s and can be locked together.
 pub trait CownCollection: CownCollectionSuper {
     /// Get the locks of the cowns in the collection.  Structurally mirrors the collection.
-    fn lock(&self) -> Self::Guard<'_>;
+    ///
+    /// Does not check if the [`Cown`]s are in use.
+    unsafe fn get_mut(&self) -> Self::Guard<'_>;
     #[doc(hidden)]
     #[allow(private_interfaces)]
     fn cown_bases(&self) -> impl IntoIterator<Item = &dyn CownBase>;
@@ -274,7 +277,7 @@ impl Request {
 }
 
 trait Thunk: Send + Sync + Send + 'static {
-    fn consume_boxed_and_release(&mut self);
+    unsafe fn consume_boxed_and_release(&mut self);
 }
 
 impl<C, F> Thunk for (C, Option<F>)
@@ -282,8 +285,8 @@ where
     C: CownCollection,
     F: for<'a> FnOnce(C::Guard<'a>) + Send + Sync + 'static,
 {
-    fn consume_boxed_and_release(&mut self) {
-        self.1.take().unwrap()(self.0.lock());
+    unsafe fn consume_boxed_and_release(&mut self) {
+        self.1.take().unwrap()(self.0.get_mut());
     }
 }
 
@@ -331,17 +334,17 @@ impl<T> Cown<T> {
     pub const fn new(value: T) -> Self {
         Cown {
             last: AtomicPtr::new(null_mut()),
-            data: Mutex::new(value),
+            data: UnsafeCell::new(value),
         }
     }
     /// Extracts the inner data from the `cown`.
     pub fn into_inner(self) -> LockResult<T> {
-        self.data.into_inner()
+        Ok(self.data.into_inner())
     }
     /// Returns a mutable reference to the underlying data.  In practice, forwarded to the internal
     /// mutex.
     pub fn get_mut(&mut self) -> LockResult<&mut T> {
-        self.data.get_mut()
+        Ok(self.data.get_mut())
     }
 }
 
@@ -357,11 +360,11 @@ macro_rules! ref_cown_collection {
     ( $v:ident => $( $t:ty ),+ )  =>  {
         $(
             impl<$v: Send + Sync + 'static> CownCollectionSuper for $t {
-                type Guard<'a> = MutexGuard<'a, T>;
+                type Guard<'a> = &'a mut T;
             }
             impl<$v: Send + Sync + 'static> CownCollection for $t {
-                fn lock(&self) -> Self::Guard<'_> {
-                    self.data.lock().unwrap()
+                unsafe fn get_mut(&self) -> Self::Guard<'_> {
+                    &mut *UnsafeCell::raw_get(&self.data)
                 }
 
                 #[doc(hidden)]
@@ -385,8 +388,8 @@ macro_rules! collection_cown_collection {
                 type Guard<'a> = $t<$v::Guard<'a>>;
             }
             impl<$v: CownCollection> CownCollection for $t<$v> {
-                fn lock(&self) -> Self::Guard<'_> {
-                    self.into_iter().map($v::lock).collect()
+                unsafe fn get_mut(&self) -> Self::Guard<'_> {
+                    self.into_iter().map(|cc| unsafe { cc.get_mut() }).collect()
                 }
 
                 #[doc(hidden)]
@@ -407,8 +410,8 @@ impl<T: CownCollectionSuper, const N: usize> CownCollectionSuper for [T; N] {
     type Guard<'a> = [T::Guard<'a>; N];
 }
 impl<T: CownCollection, const N: usize> CownCollection for [T; N] {
-    fn lock(&self) -> Self::Guard<'_> {
-        self.each_ref().map(T::lock)
+    unsafe fn get_mut(&self) -> Self::Guard<'_> {
+        self.each_ref().map(|cc| unsafe { cc.get_mut() })
     }
     #[doc(hidden)]
     #[allow(private_interfaces)]
@@ -423,11 +426,11 @@ macro_rules! variadic_cown_collection {
             type Guard<'a> = ($($v::Guard<'a>,)*);
         }
         impl<$($v: CownCollection,)*> CownCollection for ($($v,)*) {
-            fn lock(&self) -> Self::Guard<'_> {
+            unsafe fn get_mut(&self) -> Self::Guard<'_> {
                 #![allow(non_snake_case)]
                 let ($(ref $v,)*) = self;
                 #[allow(clippy::unused_unit)]
-                ($($v.lock(),)*)
+                ($($v.get_mut(),)*)
             }
             #[doc(hidden)]
             #[allow(private_interfaces)]

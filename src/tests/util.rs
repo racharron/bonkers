@@ -4,7 +4,7 @@ use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Sender};
-use std::sync::{Arc, MutexGuard};
+use std::sync::Arc;
 
 pub fn when_none_simple(runner: impl Runner) {
     let (sender, receiver) = channel();
@@ -33,12 +33,12 @@ pub fn sequential_1(runner: impl Runner) {
     const COUNT: usize = 10;
     let cown = Arc::new(Cown::new(Vec::with_capacity(COUNT)));
     for i in 0..COUNT {
-        runner.when(cown.clone(), move |mut cown| {
+        runner.when(cown.clone(), move |cown| {
             cown.push(i);
         });
     }
     let (sender, receiver) = channel();
-    runner.when(cown.clone(), move |mut guard| {
+    runner.when(cown.clone(), move |guard| {
         for (i, v) in guard.drain(..).enumerate() {
             assert_eq!(i, v);
         }
@@ -53,7 +53,7 @@ pub fn indirect_seq(runner: impl Runner) {
     let (sender, receiver) = channel();
     runner.when((a.clone(), b.clone()), {
         let counter = counter.clone();
-        move |(mut a, mut b)| {
+        move |(a, b)| {
             assert_eq!(*a, 0);
             *a += 1;
             assert_eq!(*b, 0);
@@ -63,7 +63,7 @@ pub fn indirect_seq(runner: impl Runner) {
     });
     runner.when((b.clone(), c.clone()), {
         let counter = counter.clone();
-        move |(mut b, mut c)| {
+        move |(b, c)| {
             assert_eq!(*b, 1);
             *b += 1;
             assert_eq!(*c, 0);
@@ -73,7 +73,7 @@ pub fn indirect_seq(runner: impl Runner) {
     });
     runner.when((c.clone(), d.clone()), {
         let counter = counter.clone();
-        move |(mut c, mut d)| {
+        move |(c, d)| {
             assert_eq!(*c, 1);
             *c += 1;
             assert_eq!(*d, 0);
@@ -98,7 +98,7 @@ pub fn triangle(runner: impl Runner) {
     let (sender, receiver) = channel();
     runner.when(top.clone(), {
         let counter = counter.clone();
-        move |mut top| {
+        move |top| {
             assert_eq!(counter.fetch_add(1, Ordering::AcqRel), 0);
             assert_eq!(*top, 0);
             *top += 1;
@@ -106,7 +106,7 @@ pub fn triangle(runner: impl Runner) {
     });
     let sides = {
         let counter = counter.clone();
-        move |(mut top, mut side): (MutexGuard<i32>, MutexGuard<i32>)| {
+        move |(top, side): (&mut i32, &mut i32)| {
             assert!([1, 2].contains(&counter.fetch_add(1, Ordering::AcqRel)));
             assert!([1, 2].contains(&*top));
             assert_eq!(*side, 0);
@@ -118,7 +118,7 @@ pub fn triangle(runner: impl Runner) {
     runner.when((top.clone(), right.clone()), sides);
     runner.when((left.clone(), right.clone()), {
         let counter = counter.clone();
-        move |(mut left, mut right)| {
+        move |(left, right)| {
             assert_eq!(counter.fetch_add(1, Ordering::AcqRel), 3);
             assert_eq!(*left, 1);
             assert_eq!(*right, 1);
@@ -149,7 +149,7 @@ pub fn recursive_sequential(runner: impl Runner, max_depth: usize) {
         } else {
             runner.when(cown.clone(), {
                 let runner = runner.clone();
-                move |mut c| {
+                move |c| {
                     assert_eq!(*c, 100 + depth);
                     *c += 1;
                     inner(runner, cown, sender, max_depth, depth + 1);
@@ -199,7 +199,7 @@ pub fn recursive_shuffle(runner: impl Runner, max_depth: usize) {
             if depth == max_depth {
                 let sender = sender.clone();
                 runner.when(vec, move |cowns| {
-                    for mut cown in cowns {
+                    for cown in cowns {
                         cown.push(id);
                     }
                     sender.send(()).unwrap();
