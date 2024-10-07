@@ -5,6 +5,7 @@ use std::sync::mpsc::channel;
 use std::time::Duration;
 use util::SIZES;
 
+#[allow(unused)]
 mod util;
 
 criterion_group!(thread_pools, os_nop, simple_nop, rayon_nop, tp_nop);

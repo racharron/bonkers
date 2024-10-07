@@ -1,8 +1,6 @@
 use crate::util::MAX_THREADS;
 #[allow(unused_imports)] // `util` needs `Cown` to be imported, but this is not recognized while compiling.
-use bonkers::cown::Cown;
-#[allow(unused_imports)] // `util` needs `Cown` to be imported, but this is not recognized while compiling.
-use bonkers::{OsThreads, Runner, SimpleThreadPool};
+use bonkers::{OsThreads, Runner, SimpleThreadPool, Cown};
 use criterion::measurement::WallTime;
 use criterion::{criterion_group, criterion_main, AxisScale, BenchmarkGroup, BenchmarkId, Criterion, PlotConfiguration, Throughput};
 use std::sync::Arc;
@@ -10,10 +8,6 @@ use std::time::Duration;
 
 #[allow(unused)]
 mod util;
-
-#[path = "../src/tests/util.rs"]
-#[allow(unused)]
-mod test_util;
 
 const MAX_DEPTH: u32 = 5;
 
@@ -46,7 +40,7 @@ fn bench<R: Runner>(group: &mut BenchmarkGroup<WallTime>, max_depth: usize, runn
     group.bench_with_input(benchmark_id, &max_depth, |b, &max_depth| {
         b.iter(|| {
             let runner = runner.clone();
-            test_util::recursive_shuffle(runner, max_depth)
+            util::recursive_shuffle(runner, max_depth)
         })
     });
 }

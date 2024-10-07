@@ -1,11 +1,11 @@
-use bonkers::cown::Cown;
-use bonkers::{OsThreads, Runner, SimpleThreadPool};
+use bonkers::{Mut, OsThreads, Ref, Runner, SimpleThreadPool, Cown};
 use criterion::measurement::WallTime;
 use criterion::{criterion_group, criterion_main, AxisScale, BenchmarkGroup, BenchmarkId, Criterion, PlotConfiguration, Throughput};
 use std::sync::mpsc::channel;
 use std::sync::Arc;
 use std::time::Duration;
 
+#[allow(unused)]
 mod util;
 
 criterion_group!(linear, os, simple, rayon, tp);
@@ -17,10 +17,10 @@ fn bench<R: Runner>(group: &mut BenchmarkGroup<WallTime>, size: usize, runner: &
         let (sender, receiver) = channel();
         b.iter(|| {
             for _ in 0..size {
-                runner.when(cown.clone(), move |cown| *cown += 1)
+                runner.when(Mut(cown.clone()), move |cown| *cown += 1)
             }
             let sender = sender.clone();
-            runner.when(cown.clone(), move |_| sender.send(()).unwrap());
+            runner.when(Ref(cown.clone()), move |_| sender.send(()).unwrap());
             receiver.recv().unwrap();
         })
     });
