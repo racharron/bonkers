@@ -22,7 +22,7 @@
 //! let c = Arc::new(Cown::new(300));
 //! let counter = Arc::new(AtomicUsize::new(0));
 //!
-//! pool.when(Mut((&a, &b)), {
+//! pool.when(Mut((a.clone(), b.clone())), {
 //!     let counter = counter.clone();
 //!     move |(mut a, mut b)| {
 //!         assert_eq!(counter.fetch_add(1, Ordering::AcqRel), 0);
@@ -32,7 +32,7 @@
 //!         *b += 1;
 //!     }
 //! });
-//! pool.when(Mut((&b, &c)), {
+//! pool.when(Mut((b.clone(), c.clone())), {
 //!     let counter = counter.clone();
 //!     move |(mut b, mut c)| {
 //!         assert_eq!(counter.fetch_add(1, Ordering::AcqRel), 1);
@@ -108,10 +108,10 @@ pub trait Runner: Clone + Send + Sync + 'static {
     /// Needed to keep the type system happy.
     type ThreadPool: ThreadPool;
     /// Queue a task to be run when the `cown`s are available.  See [`when`] for more details.
-    fn when<CC, T>(&self, cowns: CC, thunk: T)
+    fn when<RC, T>(&self, cowns: RC, thunk: T)
     where
-        CC: RequestRefCollection,
-        T: for<'a> FnOnce(<CC::Owned as RequestCollectionSuper>::Locked<'a>) + Send + Sync + 'static;
+        RC: RequestCollection,
+        T: for<'a> FnOnce(RC::Locked<'a>) + Send + Sync + 'static;
     /// Returns a reference to the threadpool.
     fn threadpool(&self) -> &Self::ThreadPool;
 }
@@ -127,8 +127,7 @@ pub trait Runner: Clone + Send + Sync + 'static {
 /// pool.when((c, d), |_| ...); //  Task 3
 /// ```
 /// will have all three tasks run in sequence, even though the required `cown`s of tasks 1 and 3 do not overlap.
-pub fn when<R: Runner, CC: RequestRefCollection, T: for<'a> FnOnce(<CC::Owned as RequestCollectionSuper>::Locked<'a>) + Send + Sync + 'static>(runner: &R, cowns: CC, thunk: T) {
-    let cowns = cowns.to_owned();
+pub fn when<R: Runner, RC: RequestCollection, T: for<'a> FnOnce(RC::Locked<'a>) + Send + Sync + 'static>(runner: &R, cowns: RC, thunk: T) {
     let mut cown_vec = Vec::from_iter(cowns.cown_bases());
     cown_vec.sort_unstable_by_key(|&cbr| cbr as *const _ as *const () as usize);
     cown_vec
@@ -150,7 +149,7 @@ pub fn when<R: Runner, CC: RequestRefCollection, T: for<'a> FnOnce(<CC::Owned as
 impl<TP: ThreadPool + Sync> Runner for &'static TP {
     type ThreadPool = TP;
 
-    fn when<CC: RequestRefCollection, T: for<'a> FnOnce(<CC::Owned as RequestCollectionSuper>::Locked<'a>) + Send + Sync + 'static>(&self, cowns: CC, thunk: T) {
+    fn when<RC: RequestCollection, T: for<'a> FnOnce(RC::Locked<'a>) + Send + Sync + 'static>(&self, cowns: RC, thunk: T) {
         when(self, cowns, thunk)
     }
 
@@ -162,7 +161,7 @@ impl<TP: ThreadPool + Sync> Runner for &'static TP {
 impl<TP: ThreadPool + Sync + Send + 'static> Runner for Arc<TP> {
     type ThreadPool = TP;
 
-    fn when<CC: RequestRefCollection, T: for<'a> FnOnce(<CC::Owned as RequestCollectionSuper>::Locked<'a>) + Send + Sync + 'static>(&self, cowns: CC, thunk: T) {
+    fn when<RC: RequestCollection, T: for<'a> FnOnce(RC::Locked<'a>) + Send + Sync + 'static>(&self, cowns: RC, thunk: T) {
         when(self, cowns, thunk)
     }
 
