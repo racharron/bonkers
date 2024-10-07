@@ -1,12 +1,12 @@
-use std::sync::{Arc, LockResult};
-use std::sync::atomic::AtomicPtr;
-use std::iter::{once, empty};
+use crate::Request;
 use std::cell::UnsafeCell;
 use std::collections::VecDeque;
+use std::iter::{empty, once};
 use std::marker::PhantomData;
 use std::ops::{Index, IndexMut};
 use std::ptr::null_mut;
-use crate::Request;
+use std::sync::atomic::AtomicPtr;
+use std::sync::{Arc, LockResult};
 
 /// A mutex where multiple mutexes can be locked in parallel.  By default, locks provide a read-only
 /// view of the contained data.
@@ -28,13 +28,19 @@ pub trait CownCollection: Send + Sync + 'static {
     /// A mutable reference to the inner data.
     type Mut<'a>;
     /// Get an immutable reference to the [`Cown`]'s inner data.
+    ///
+    /// # Safety
+    /// May only be called when Rust's reference invariants will hold.
     unsafe fn get_ref(&self) -> Self::Ref<'_>;
     /// Get a mutable reference to the [`Cown`]'s inner data.
+    ///
+    /// # Safety
+    /// May only be called when Rust's reference invariants will hold.
     unsafe fn get_mut(&self) -> Self::Mut<'_>;
     #[doc(hidden)]
     #[allow(private_interfaces)]
     /// Get an iterator of pointers to the pointer to the most recent request of this [`Cown`].
-    fn last(&self) -> impl Iterator<Item=*const AtomicPtr<Request>>;
+    fn last(&self) -> impl Iterator<Item = *const AtomicPtr<Request>>;
 }
 
 /// This supertrait is needed as a workaround for a limitation in Rust's trait system.
@@ -48,6 +54,9 @@ pub trait RequestCollection: RequestCollectionSuper + Send + Sync + 'static {
     /// Get the locks of the cowns in the collection.  Structurally mirrors the collection.
     ///
     /// Does not check if the [`Cown`]s are in use.
+    ///
+    /// # Safety
+    /// May only be called when Rust's reference invariants will hold.
     unsafe fn locked(&self) -> Self::Locked<'_>;
     #[doc(hidden)]
     #[allow(private_interfaces)]
@@ -57,7 +66,7 @@ pub trait RequestCollection: RequestCollectionSuper + Send + Sync + 'static {
 /// Allows for indexing into the contained data of datastructures of [`Cown`]s without needing to allocate
 /// arrays of references.  Only allows for immutable access.
 pub struct IndexCownRef<'a, T: ?Sized> {
-    inner: &'a T
+    inner: &'a T,
 }
 
 /// Allows for indexing into the contained data of datastructures of [`Cown`]s without needing to allocate
@@ -69,42 +78,38 @@ pub struct IndexCownMut<'a, T: ?Sized> {
 /// An iterator over references to the inner values of a sequence of [`Cown`]s.
 pub struct CownIter<'a, I> {
     inner: I,
-    _phantom: PhantomData<&'a I>
+    _phantom: PhantomData<&'a I>,
 }
 /// An iterator over references to the inner values of a sequence of [`Cown`]s.
 pub struct CownIterMut<'a, I> {
     inner: I,
-    _phantom: PhantomData<&'a I>
+    _phantom: PhantomData<&'a I>,
 }
 
-impl<'a, C, CC: for<'b> CownCollection<Ref<'b>=&'b C>, I, T: Index<I, Output=CC>> Index<I> for IndexCownRef<'a, T> {
+impl<'a, C, CC: for<'b> CownCollection<Ref<'b> = &'b C>, I, T: Index<I, Output = CC>> Index<I> for IndexCownRef<'a, T> {
     type Output = C;
 
     fn index(&self, index: I) -> &Self::Output {
-        unsafe {
-            self.inner[index].get_ref()
-        }
+        unsafe { self.inner[index].get_ref() }
     }
 }
-impl<'a, C, CC: for<'b> CownCollection<Ref<'b>=&'b C, Mut<'b>=&'b mut C>, I, T: Index<I, Output=CC>> Index<I> for IndexCownMut<'a, T> {
+impl<'a, C, CC: for<'b> CownCollection<Ref<'b> = &'b C, Mut<'b> = &'b mut C>, I, T: Index<I, Output = CC>> Index<I> for IndexCownMut<'a, T> {
     type Output = C;
 
     fn index(&self, index: I) -> &Self::Output {
-        unsafe {
-            self.inner[index].get_ref()
-        }
+        unsafe { self.inner[index].get_ref() }
     }
 }
-impl<'a, C, CC: for<'b> CownCollection<Ref<'b>=&'b C, Mut<'b>=&'b mut C>, I, T: Index<I, Output=CC>> IndexMut<I> for IndexCownMut<'a, T> {
-
+impl<'a, C, CC: for<'b> CownCollection<Ref<'b> = &'b C, Mut<'b> = &'b mut C>, I, T: Index<I, Output = CC>> IndexMut<I> for IndexCownMut<'a, T> {
     fn index_mut(&mut self, index: I) -> &mut Self::Output {
-        unsafe {
-            self.inner[index].get_mut()
-        }
+        unsafe { self.inner[index].get_mut() }
     }
 }
 
-impl<'a, 'b, T: ?Sized, CC: CownCollection> IntoIterator for &'b IndexCownRef<'a, T> where &'a T: IntoIterator<Item=&'a CC> {
+impl<'a, 'b, T: ?Sized, CC: CownCollection> IntoIterator for &'b IndexCownRef<'a, T>
+where
+    &'a T: IntoIterator<Item = &'a CC>,
+{
     type Item = CC::Ref<'a>;
     type IntoIter = CownIter<'a, <&'a T as IntoIterator>::IntoIter>;
 
@@ -116,7 +121,10 @@ impl<'a, 'b, T: ?Sized, CC: CownCollection> IntoIterator for &'b IndexCownRef<'a
     }
 }
 
-impl<'a, 'b, T: ?Sized, CC: CownCollection> IntoIterator for &'b IndexCownMut<'a, T> where &'a T: IntoIterator<Item=&'a CC> {
+impl<'a, 'b, T: ?Sized, CC: CownCollection> IntoIterator for &'b IndexCownMut<'a, T>
+where
+    &'a T: IntoIterator<Item = &'a CC>,
+{
     type Item = CC::Ref<'a>;
     type IntoIter = CownIter<'a, <&'a T as IntoIterator>::IntoIter>;
 
@@ -127,7 +135,10 @@ impl<'a, 'b, T: ?Sized, CC: CownCollection> IntoIterator for &'b IndexCownMut<'a
         }
     }
 }
-impl<'a, 'b, T: ?Sized, CC: CownCollection> IntoIterator for &'b mut IndexCownMut<'a, T> where &'a T: IntoIterator<Item=&'a CC> {
+impl<'a, 'b, T: ?Sized, CC: CownCollection> IntoIterator for &'b mut IndexCownMut<'a, T>
+where
+    &'a T: IntoIterator<Item = &'a CC>,
+{
     type Item = CC::Mut<'a>;
     type IntoIter = CownIterMut<'a, <&'a T as IntoIterator>::IntoIter>;
 
@@ -139,14 +150,14 @@ impl<'a, 'b, T: ?Sized, CC: CownCollection> IntoIterator for &'b mut IndexCownMu
     }
 }
 
-impl<'a, CC: CownCollection, I: Iterator<Item=&'a CC>> Iterator for CownIter<'a, I> {
+impl<'a, CC: CownCollection, I: Iterator<Item = &'a CC>> Iterator for CownIter<'a, I> {
     type Item = CC::Ref<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.next().map(|c| unsafe { c.get_ref() })
     }
 }
-impl<'a, CC: CownCollection, I: Iterator<Item=&'a CC>> Iterator for CownIterMut<'a, I> {
+impl<'a, CC: CownCollection, I: Iterator<Item = &'a CC>> Iterator for CownIterMut<'a, I> {
     type Item = CC::Mut<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -182,20 +193,16 @@ impl<CC: CownCollection> CownCollection for Box<[CC]> {
     type Mut<'a> = IndexCownMut<'a, [CC]>;
 
     unsafe fn get_ref(&self) -> Self::Ref<'_> {
-        IndexCownRef {
-            inner: &**self,
-        }
+        IndexCownRef { inner: &**self }
     }
 
     unsafe fn get_mut(&self) -> Self::Mut<'_> {
-        IndexCownMut {
-            inner: &**self
-        }
+        IndexCownMut { inner: &**self }
     }
 
     #[doc(hidden)]
     #[allow(private_interfaces)]
-    fn last(&self) -> impl Iterator<Item=*const AtomicPtr<Request>> {
+    fn last(&self) -> impl Iterator<Item = *const AtomicPtr<Request>> {
         self.iter().flat_map(CC::last)
     }
 }
@@ -205,21 +212,17 @@ impl<CC: CownCollection> CownCollection for Vec<CC> {
     type Mut<'a> = IndexCownMut<'a, [CC]>;
 
     unsafe fn get_ref(&self) -> Self::Ref<'_> {
-        IndexCownRef {
-            inner: &**self,
-        }
+        IndexCownRef { inner: &**self }
     }
 
     unsafe fn get_mut(&self) -> Self::Mut<'_> {
-        IndexCownMut {
-            inner: &**self,
-        }
+        IndexCownMut { inner: &**self }
     }
 
     #[doc(hidden)]
     #[allow(private_interfaces)]
-    fn last(&self) -> impl Iterator<Item=*const AtomicPtr<Request>> {
-        self.into_iter().flat_map(CC::last)
+    fn last(&self) -> impl Iterator<Item = *const AtomicPtr<Request>> {
+        self.iter().flat_map(CC::last)
     }
 }
 
@@ -228,20 +231,16 @@ impl<CC: CownCollection> CownCollection for VecDeque<CC> {
     type Mut<'a> = IndexCownMut<'a, Self>;
 
     unsafe fn get_ref(&self) -> Self::Ref<'_> {
-        IndexCownRef {
-            inner: self,
-        }
+        IndexCownRef { inner: self }
     }
 
     unsafe fn get_mut(&self) -> Self::Mut<'_> {
-        IndexCownMut {
-            inner: self
-        }
+        IndexCownMut { inner: self }
     }
 
     #[doc(hidden)]
     #[allow(private_interfaces)]
-    fn last(&self) -> impl Iterator<Item=*const AtomicPtr<Request>> {
+    fn last(&self) -> impl Iterator<Item = *const AtomicPtr<Request>> {
         self.iter().flat_map(CC::last)
     }
 }
@@ -261,7 +260,7 @@ impl<CC: CownCollection> RequestCollection for Ref<CC> {
 
     #[doc(hidden)]
     #[allow(private_interfaces)]
-    fn cown_bases(&self) -> impl Iterator<Item=*const AtomicPtr<Request>> {
+    fn cown_bases(&self) -> impl Iterator<Item = *const AtomicPtr<Request>> {
         self.0.last()
     }
 }
@@ -273,7 +272,7 @@ impl<CC: CownCollection> RequestCollection for Mut<CC> {
 
     #[doc(hidden)]
     #[allow(private_interfaces)]
-    fn cown_bases(&self) -> impl Iterator<Item=*const AtomicPtr<Request>> {
+    fn cown_bases(&self) -> impl Iterator<Item = *const AtomicPtr<Request>> {
         self.0.last()
     }
 }
@@ -292,7 +291,7 @@ impl<T: Send + Sync + 'static> CownCollection for &'static Cown<T> {
 
     #[doc(hidden)]
     #[allow(private_interfaces)]
-    fn last(&self) -> impl Iterator<Item=*const AtomicPtr<Request>> {
+    fn last(&self) -> impl Iterator<Item = *const AtomicPtr<Request>> {
         once(&self.last as *const _)
     }
 }
@@ -311,7 +310,7 @@ impl<T: Send + Sync + 'static> CownCollection for Arc<Cown<T>> {
 
     #[doc(hidden)]
     #[allow(private_interfaces)]
-    fn last(&self) -> impl Iterator<Item=*const AtomicPtr<Request>> {
+    fn last(&self) -> impl Iterator<Item = *const AtomicPtr<Request>> {
         once(&self.last as *const _)
     }
 }
@@ -330,7 +329,7 @@ impl<T: CownCollection, const N: usize> CownCollection for [T; N] {
 
     #[doc(hidden)]
     #[allow(private_interfaces)]
-    fn last(&self) -> impl Iterator<Item=*const AtomicPtr<Request>> {
+    fn last(&self) -> impl Iterator<Item = *const AtomicPtr<Request>> {
         self.iter().flat_map(T::last)
     }
 }
@@ -340,7 +339,6 @@ impl<T: RequestCollection, const N: usize> RequestCollectionSuper for [T; N] {
 }
 
 impl<T: RequestCollection, const N: usize> RequestCollection for [T; N] {
-
     unsafe fn locked(&self) -> Self::Locked<'_> {
         self.each_ref().map(|cc| unsafe { cc.locked() })
     }
@@ -351,7 +349,6 @@ impl<T: RequestCollection, const N: usize> RequestCollection for [T; N] {
     }
 }
 
-
 macro_rules! variadic_cown_impl {
     ($($v:ident)*) => {
         impl<$($v: CownCollection),*> CownCollection for ($($v,)*) {
@@ -359,19 +356,25 @@ macro_rules! variadic_cown_impl {
             type Mut<'a> = ($($v::Mut<'a>,)*);
             unsafe fn get_ref(&self) -> Self::Ref<'_> {
                 #[allow(non_snake_case)]
+                #[allow(unit_bindings)]
                 let ($(ref $v,)*) = self;
+                #[allow(clippy::unused_unit)]
                 ($($v.get_ref(),)*)
             }
             unsafe fn get_mut(&self) -> Self::Mut<'_> {
                 #[allow(non_snake_case)]
+                #[allow(unit_bindings)]
                 let ($(ref $v,)*) = self;
+                #[allow(clippy::unused_unit)]
                 ($($v.get_mut(),)*)
             }
             #[doc(hidden)]
             #[allow(private_interfaces)]
             fn last(&self) -> impl Iterator<Item=*const AtomicPtr<Request>> {
                 #[allow(non_snake_case)]
+                #[allow(unit_bindings)]
                 let ($(ref $v,)*) = self;
+                #[allow(clippy::unused_unit)]
                 empty() $( .chain($v.last()) )*
             }
         }

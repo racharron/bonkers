@@ -166,7 +166,7 @@ impl<TP: ThreadPool + Sync + Send + 'static> Runner for Arc<TP> {
     }
 
     fn threadpool(&self) -> &Self::ThreadPool {
-        &*self
+        self
     }
 }
 
@@ -293,4 +293,3 @@ impl Behavior {
         }
     }
 }
-

@@ -1,12 +1,12 @@
 use crate::util::MAX_THREADS;
 #[allow(unused_imports)] // `util` needs `Cown` to be imported, but this is not recognized while compiling.
+use bonkers::cown::Cown;
+#[allow(unused_imports)] // `util` needs `Cown` to be imported, but this is not recognized while compiling.
 use bonkers::{OsThreads, Runner, SimpleThreadPool};
 use criterion::measurement::WallTime;
 use criterion::{criterion_group, criterion_main, AxisScale, BenchmarkGroup, BenchmarkId, Criterion, PlotConfiguration, Throughput};
 use std::sync::Arc;
 use std::time::Duration;
-#[allow(unused_imports)] // `util` needs `Cown` to be imported, but this is not recognized while compiling.
-use bonkers::cown::Cown;
 
 #[allow(unused)]
 mod util;
