@@ -60,11 +60,14 @@
 
 #![deny(missing_docs)]
 
+use erasable::{Erasable, ErasedPtr};
+use slice_dst::SliceWithHeader;
 use std::cell::UnsafeCell;
+use std::cmp::Ordering;
 use std::collections::{LinkedList, VecDeque};
 use std::convert::identity;
 use std::iter::{empty, once};
-use std::ptr::null_mut;
+use std::ptr::{addr_of_mut, null_mut, slice_from_raw_parts_mut, NonNull};
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering as AtomicOrd};
 use std::sync::{Arc, LockResult};
 use std::thread::yield_now;
@@ -130,22 +133,28 @@ pub trait Runner: Clone + Send + Sync + 'static {
 /// ```
 /// will have all three tasks run in sequence, even though the required `cown`s of tasks 1 and 3 do not overlap.
 pub fn when<R: Runner, CC: CownCollection, T: for<'a> FnOnce(CC::Guard<'a>) + Send + Sync + 'static>(runner: &R, cowns: CC, thunk: T) {
-    let mut cown_vec = Vec::from_iter(cowns.cown_bases());
-    cown_vec.sort_unstable_by_key(|&cbr| cbr as *const _ as *const () as usize);
-    cown_vec
-        .windows(2)
-        .for_each(|cbs| assert_ne!(cbs[0] as *const _ as *const () as usize, cbs[1] as *const _ as *const () as usize));
-    let requests = Vec::from_iter(cown_vec.iter().cloned().map(Request::new));
-    let behavior = Box::into_raw(Behavior::new(requests, (cowns, Some(thunk))));
+    let mut infos = Vec::from_iter(cowns.infos());
+    infos.sort_unstable();
+    infos.windows(2).for_each(|adjacent| assert_ne!(adjacent[0], adjacent[1]));
+    let size = infos.len();
+    let behavior = Box::into_raw(Behavior::new(
+        BehaviorHeader {
+            thunk: Box::new((cowns, Some(Box::new(thunk)))),
+            count: AtomicUsize::new(size + 1),
+        },
+        infos.into_iter().map(|info| Request::new(info.last)),
+    ));
     unsafe {
-        for i in 0..(*behavior).requests.len() {
-            Request::start_appending((*behavior).requests.as_ptr().add(i), behavior, runner);
+        let requests_base = addr_of_mut!((*behavior).slice) as *mut Request;
+        let behavior = NonNull::new_unchecked(behavior);
+        for i in 0..size {
+            Request::start_appending(requests_base.add(i), behavior, runner);
         }
-        for request in &(*behavior).requests {
-            request.finish_appending();
+        for i in 0..size {
+            Request::finish_appending(requests_base.add(i));
         }
+        resolve_one(behavior, runner);
     }
-    Behavior::resolve_one(behavior, runner);
 }
 
 impl<TP: ThreadPool + Sync> Runner for &'static TP {
@@ -178,6 +187,29 @@ pub struct Cown<T> {
     data: UnsafeCell<T>,
 }
 
+/// Information about the location at which a [`Cown`] is stored.
+#[derive(Debug)]
+pub struct CownInfo {
+    last: *const AtomicPtr<Request>,
+}
+
+impl PartialEq for CownInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.last.eq(&other.last)
+    }
+}
+impl Eq for CownInfo {}
+impl PartialOrd for CownInfo {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        (self.last as usize).partial_cmp(&(other.last as usize))
+    }
+}
+impl Ord for CownInfo {
+    fn cmp(&self, other: &Self) -> Ordering {
+        (self.last as usize).cmp(&(other.last as usize))
+    }
+}
+
 /// Null pointer.
 const NULL: *mut Request = 0 as *mut _;
 
@@ -190,7 +222,7 @@ const POISONED: *mut Request = 1 as *mut _;
 trait CownBase {
     #[doc(hidden)]
     #[allow(private_interfaces)]
-    fn last(&self) -> *const AtomicPtr<Request>;
+    fn info(&self) -> CownInfo;
 }
 
 /// Needed to work around an issue with Rust's trait system.  Effectively part of [`CownCollection`].
@@ -207,11 +239,11 @@ pub trait CownCollection: CownCollectionSuper {
     unsafe fn get_mut(&self) -> Self::Guard<'_>;
     #[doc(hidden)]
     #[allow(private_interfaces)]
-    fn cown_bases(&self) -> impl IntoIterator<Item = &dyn CownBase>;
+    fn infos(&self) -> impl IntoIterator<Item = CownInfo>;
 }
 
 struct Request {
-    next: AtomicPtr<Behavior>,
+    next: AtomicPtr<()>,
     scheduled: AtomicBool,
     target: *const AtomicPtr<Request>,
 }
@@ -220,21 +252,23 @@ unsafe impl Send for Request {}
 unsafe impl Sync for Request {}
 
 impl Request {
-    pub fn new(target: &dyn CownBase) -> Self {
+    pub fn new(target: *const AtomicPtr<Request>) -> Self {
         Request {
             next: AtomicPtr::new(null_mut()),
             scheduled: AtomicBool::new(false),
-            target: target.last(),
+            target,
         }
     }
-    pub fn finish_appending(&self) {
-        self.scheduled.store(true, AtomicOrd::Release);
-    }
-    pub fn start_appending<R: Runner>(this: *const Self, behavior: *mut Behavior, runner: &R) {
+    pub fn finish_appending(this: *mut Self) {
         unsafe {
-            let prev = (*(*this).target).swap(this as *mut _, AtomicOrd::AcqRel);
+            (*this).scheduled.store(true, AtomicOrd::Release);
+        }
+    }
+    pub fn start_appending<R: Runner>(this: *mut Self, behavior: NonNull<Behavior>, runner: &R) {
+        unsafe {
+            let prev = (*(*this).target).swap(this, AtomicOrd::AcqRel);
             match prev {
-                NULL => Behavior::resolve_one(behavior, runner),
+                NULL => resolve_one(behavior, runner),
                 POISONED => todo!("poisoned!"),
                 prev => {
                     let mut backoff = Backoff::new();
@@ -243,25 +277,34 @@ impl Request {
                             yield_now();
                         }
                     }
-                    (*prev).next.store(behavior, AtomicOrd::Release);
+                    (*prev).next.store(behavior.as_ptr() as *mut _, AtomicOrd::Release);
                 }
             }
         }
     }
-    pub fn release<R: Runner>(&self, runner: &R) {
+    pub fn release<R: Runner>(this: *mut Self, runner: &R) {
         unsafe {
-            let mut next = self.next.load(AtomicOrd::Acquire);
+            let next = (*this).next.load(AtomicOrd::Acquire);
+            let mut next = if next.is_null() {
+                slice_from_raw_parts_mut(null_mut::<()>(), 0) as *mut _
+            } else {
+                Behavior::unerase(NonNull::new_unchecked(next as *mut _)).as_ptr()
+            };
             if next.is_null() {
-                let latest = &*self.target;
-                let old = latest
-                    .compare_exchange(self as *const _ as *mut _, NULL, AtomicOrd::SeqCst, AtomicOrd::Acquire)
+                let old = (*(*this).target)
+                    .compare_exchange(this, NULL, AtomicOrd::SeqCst, AtomicOrd::Acquire)
                     .unwrap_or_else(identity);
-                if std::ptr::eq(old as *const _, self as *const _) {
+                if std::ptr::addr_eq(old, this) {
                     return;
                 }
                 let mut backoff = Backoff::new();
                 loop {
-                    next = self.next.load(AtomicOrd::Acquire);
+                    let new = (*this).next.load(AtomicOrd::Acquire);
+                    next = if new.is_null() {
+                        slice_from_raw_parts_mut(null_mut::<()>(), 0) as *mut _
+                    } else {
+                        Behavior::unerase(NonNull::new_unchecked(new as *mut _)).as_ptr()
+                    };
                     if next.is_null() {
                         if !backoff.snooze() {
                             yield_now();
@@ -271,7 +314,7 @@ impl Request {
                     }
                 }
             }
-            Behavior::resolve_one(next, runner)
+            resolve_one(NonNull::new_unchecked(next), runner)
         }
     }
 }
@@ -292,35 +335,40 @@ where
 
 /// Contains information about queued behavior.  Since it is stored in a directed acyclic graph,
 /// weak reference counts are not needed.
-struct Behavior {
+type Behavior = SliceWithHeader<BehaviorHeader, Request>;
+
+struct BehaviorHeader {
     thunk: Box<dyn Thunk>,
     count: AtomicUsize,
-    requests: Vec<Request>,
 }
 
-impl Behavior {
-    pub fn new<T: Thunk>(requests: Vec<Request>, thunk: T) -> Box<Self> {
-        Box::new(Behavior {
-            thunk: Box::new(thunk),
-            count: AtomicUsize::new(requests.len() + 1),
-            requests,
-        })
-    }
-    pub fn resolve_one<R: Runner>(this: *mut Self, runner: &R) {
-        unsafe {
-            let behavior = &*this;
-            if behavior.count.fetch_sub(1, AtomicOrd::AcqRel) == 1 {
-                let mut behavior = Box::from_raw(this);
-                runner.threadpool().run({
-                    let runner = runner.clone();
-                    move || {
-                        behavior.thunk.consume_boxed_and_release();
-                        for request in &behavior.requests {
-                            request.release(&runner);
-                        }
+fn resolve_one<R: Runner>(this: NonNull<Behavior>, runner: &R) {
+    unsafe {
+        if (*this.as_ptr()).header.count.fetch_sub(1, AtomicOrd::AcqRel) == 1 {
+            struct BehaviorOwner(ErasedPtr);
+            unsafe impl Send for BehaviorOwner {}
+            unsafe impl Sync for BehaviorOwner {}
+            impl Drop for BehaviorOwner {
+                fn drop(&mut self) {
+                    unsafe {
+                        let _ = Box::from_raw(Behavior::unerase(self.0).as_ptr());
                     }
-                });
+                }
             }
+            let behavior = BehaviorOwner(Behavior::erase(this));
+            runner.threadpool().run({
+                let runner = runner.clone();
+                move || {
+                    let _ = &behavior;
+                    let behavior = Behavior::unerase(behavior.0);
+                    (*behavior.as_ptr()).header.thunk.consume_boxed_and_release();
+                    let requests_base = addr_of_mut!((*behavior.as_ptr()).slice) as *mut Request;
+                    let size = (*behavior.as_ptr()).slice.len();
+                    for i in 0..size {
+                        Request::release(requests_base.add(i), &runner);
+                    }
+                }
+            });
         }
     }
 }
@@ -351,8 +399,8 @@ impl<T> Cown<T> {
 impl<T: Send + Sync + 'static> CownBase for Cown<T> {
     #[doc(hidden)]
     #[allow(private_interfaces)]
-    fn last(&self) -> *const AtomicPtr<Request> {
-        &self.last
+    fn info(&self) -> CownInfo {
+        CownInfo { last: &self.last }
     }
 }
 
@@ -369,8 +417,8 @@ macro_rules! ref_cown_collection {
 
                 #[doc(hidden)]
                 #[allow(private_interfaces)]
-                fn cown_bases<'a>(&'a self) -> impl IntoIterator<Item=&'a dyn CownBase> {
-                    once(&**self as &dyn CownBase)
+                fn infos<'a>(&'a self) -> impl IntoIterator<Item=CownInfo> {
+                    once(self.info())
                 }
             }
         )+
@@ -394,8 +442,8 @@ macro_rules! collection_cown_collection {
 
                 #[doc(hidden)]
                 #[allow(private_interfaces)]
-                fn cown_bases(&self) -> impl IntoIterator<Item=&dyn CownBase> {
-                    self.into_iter().flat_map($v::cown_bases)
+                fn infos(&self) -> impl IntoIterator<Item=CownInfo> {
+                    self.into_iter().flat_map($v::infos)
                 }
             }
         )+
@@ -415,8 +463,8 @@ impl<T: CownCollection, const N: usize> CownCollection for [T; N] {
     }
     #[doc(hidden)]
     #[allow(private_interfaces)]
-    fn cown_bases(&self) -> impl IntoIterator<Item = &dyn CownBase> {
-        self.iter().flat_map(T::cown_bases)
+    fn infos(&self) -> impl IntoIterator<Item = CownInfo> {
+        self.iter().flat_map(T::infos)
     }
 }
 
@@ -434,10 +482,10 @@ macro_rules! variadic_cown_collection {
             }
             #[doc(hidden)]
             #[allow(private_interfaces)]
-            fn cown_bases(&self) -> impl IntoIterator<Item=&dyn CownBase> {
+            fn infos(&self) -> impl IntoIterator<Item=CownInfo> {
                 #![allow(non_snake_case)]
                 let ($(ref $v,)*) = self;
-                empty() $(.chain($v.cown_bases()))*
+                empty() $(.chain($v.infos()))*
             }
         }
     }
