@@ -51,3 +51,27 @@ fn recursive_shuffle() {
     util::recursive_shuffle(pool.clone(), 3);
     pool.finish();
 }
+
+/// Test to check that immutable locks can proceed in parallel.
+#[test]
+fn imm_parallel() {
+    use crate::*;
+    use std::sync::*;
+    let pool = Arc::new(OsThreads::new());
+    let cown = Arc::new(Cown::new(()));
+    let cvar = Arc::new(Condvar::new());
+    let mutex = Arc::new(Mutex::new(false));
+
+    pool.when(Imm(cown.clone()), {
+        let cvar = cvar.clone();
+        let mutex = mutex.clone();
+        move |_| {
+            drop(cvar.wait_while(mutex.lock().unwrap(), |done| !*done));
+        }
+    });
+    pool.when(Imm(cown), move |_| {
+        *mutex.lock().unwrap() = true;
+        cvar.notify_one();
+    });
+    pool.finish();
+}
