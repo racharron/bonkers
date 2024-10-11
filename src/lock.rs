@@ -23,10 +23,18 @@ pub struct Imm<C: CownCollection>(pub C);
 
 /// Information about a lock of a [`Cown`].
 pub struct LockInfo {
-    /// Information about the locked [`Cown`]
-    pub cown: CownInfo,
-    /// Indicates that the lock is a shared, immutable access lock.
-    pub read_only: bool,
+    pub(crate) cown: CownInfo,
+    pub(crate) read_only: bool,
+}
+impl LockInfo {
+    /// Returns information about the locked [`Cown`]'s memory address.
+    pub fn cown_info(&self) -> CownInfo {
+        self.cown
+    }
+    /// Returns information about whether the lock is read-only.
+    pub fn read_only(&self) -> bool {
+        self.read_only
+    }
 }
 
 impl<C: CownCollection> LockCollectionSuper for Mut<C> {

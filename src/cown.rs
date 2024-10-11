@@ -193,7 +193,7 @@ impl<T: CownCollection> CownCollection for VecDeque<T> {
 }
 
 /// Type-erased information about the location at which a [`Cown`] is stored.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, Hash)]
 pub struct CownInfo {
     pub(crate) last: *const AtomicPtr<Request>,
 }
