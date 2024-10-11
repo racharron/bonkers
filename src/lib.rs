@@ -251,7 +251,7 @@ impl Request {
                         if (*current).read_only {
                             current = (*current).next_request.load(AtomicOrd::Acquire);
                         } else {
-                            return
+                            return;
                         }
                     } else {
                         let old = (*(*this).target)
@@ -265,7 +265,7 @@ impl Request {
                             if let Some(new) = NonNull::new((*current).next_behavior.load(AtomicOrd::Acquire) as *mut _) {
                                 let next_behavior = Behavior::unerase(new);
                                 resolve_one(next_behavior, runner);
-                                return
+                                return;
                             } else if !backoff.snooze() {
                                 yield_now();
                             }
