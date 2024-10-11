@@ -8,9 +8,8 @@
 //! ## Example
 //! ```rust
 //! # mod some { pub mod path { pub use bonkers::OsThreads as SomeThreadPool; } }
-//! use bonkers::ThreadPool;
+//! use bonkers::{Cown, ThreadPool, Runner, Mut, Imm};
 //! use some::path::SomeThreadPool;
-//! use bonkers::{Cown, Runner};
 //!
 //! use std::sync::Arc;
 //! use std::sync::atomic::{AtomicUsize, Ordering};
@@ -23,7 +22,7 @@
 //! let c = Arc::new(Cown::new(300));
 //! let counter = Arc::new(AtomicUsize::new(0));
 //!
-//! pool.when((a.clone(), b.clone()), {
+//! pool.when(Mut((a.clone(), b.clone())), {
 //!     let counter = counter.clone();
 //!     move |(mut a, mut b)| {
 //!         assert_eq!(counter.fetch_add(1, Ordering::AcqRel), 0);
@@ -33,7 +32,7 @@
 //!         *b += 1;
 //!     }
 //! });
-//! pool.when((b.clone(), c.clone()), {
+//! pool.when((Mut(b.clone()), Mut(c.clone())), {
 //!     let counter = counter.clone();
 //!     move |(mut b, mut c)| {
 //!         assert_eq!(counter.fetch_add(1, Ordering::AcqRel), 1);
@@ -44,7 +43,7 @@
 //!     }
 //! });
 //! let (sender, receiver) = channel();
-//! pool.when((a, b, c), {
+//! pool.when(Imm((a, b, c)), {
 //!     let counter = counter.clone();
 //!     move |(a, b, c)| {
 //!         assert_eq!(counter.fetch_add(1, Ordering::AcqRel), 2);
@@ -62,14 +61,11 @@
 
 use erasable::{Erasable, ErasedPtr};
 use slice_dst::SliceWithHeader;
-use std::cell::UnsafeCell;
-use std::cmp::Ordering;
-use std::collections::{LinkedList, VecDeque};
+use std::collections::VecDeque;
 use std::convert::identity;
-use std::iter::{empty, once};
 use std::ptr::{addr_of_mut, null_mut, slice_from_raw_parts_mut, NonNull};
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering as AtomicOrd};
-use std::sync::{Arc, LockResult};
+use std::sync::Arc;
 use std::thread::yield_now;
 
 #[cfg(test)]
@@ -77,6 +73,12 @@ mod tests;
 
 mod thread_pool;
 pub use thread_pool::*;
+mod cown;
+pub use cown::*;
+
+mod lock;
+pub use lock::*;
+mod macro_impls;
 
 /// Basically taken from `crossbeam`.
 struct Backoff {
@@ -113,10 +115,10 @@ pub trait Runner: Clone + Send + Sync + 'static {
     /// Needed to keep the type system happy.
     type ThreadPool: ThreadPool;
     /// Queue a task to be run when the `cown`s are available.  See [`when`] for more details.
-    fn when<CC, T>(&self, cowns: CC, thunk: T)
+    fn when<L, T>(&self, cowns: L, thunk: T)
     where
-        CC: CownCollection,
-        T: for<'a> FnOnce(CC::Guard<'a>) + Send + Sync + 'static;
+        L: LockCollection,
+        T: for<'a> FnOnce(L::Ref<'a>) + Send + Sync + 'static;
     /// Returns a reference to the threadpool.
     fn threadpool(&self) -> &Self::ThreadPool;
 }
@@ -132,17 +134,17 @@ pub trait Runner: Clone + Send + Sync + 'static {
 /// pool.when((c, d), |_| ...); //  Task 3
 /// ```
 /// will have all three tasks run in sequence, even though the required `cown`s of tasks 1 and 3 do not overlap.
-pub fn when<R: Runner, CC: CownCollection, T: for<'a> FnOnce(CC::Guard<'a>) + Send + Sync + 'static>(runner: &R, cowns: CC, thunk: T) {
+pub fn when<R: Runner, L: LockCollection, T: for<'a> FnOnce(L::Ref<'a>) + Send + Sync + 'static>(runner: &R, cowns: L, thunk: T) {
     let mut infos = Vec::from_iter(cowns.infos());
-    infos.sort_unstable();
-    infos.windows(2).for_each(|adjacent| assert_ne!(adjacent[0], adjacent[1]));
+    infos.sort_unstable_by(|a, b| a.cown.cmp(&b.cown));
+    infos.windows(2).for_each(|adjacent| assert_ne!(adjacent[0].cown, adjacent[1].cown));
     let size = infos.len();
     let behavior = Box::into_raw(Behavior::new(
         BehaviorHeader {
             thunk: Box::new((cowns, Some(Box::new(thunk)))),
             count: AtomicUsize::new(size + 1),
         },
-        infos.into_iter().map(|info| Request::new(info.last)),
+        infos.into_iter().map(|info| Request::new(info.cown.last)),
     ));
     unsafe {
         let requests_base = addr_of_mut!((*behavior).slice) as *mut Request;
@@ -160,7 +162,7 @@ pub fn when<R: Runner, CC: CownCollection, T: for<'a> FnOnce(CC::Guard<'a>) + Se
 impl<TP: ThreadPool + Sync> Runner for &'static TP {
     type ThreadPool = TP;
 
-    fn when<CC: CownCollection, T: for<'a> FnOnce(CC::Guard<'a>) + Send + Sync + 'static>(&self, cowns: CC, thunk: T) {
+    fn when<L: LockCollection, T: for<'a> FnOnce(L::Ref<'a>) + Send + Sync + 'static>(&self, cowns: L, thunk: T) {
         when(self, cowns, thunk)
     }
 
@@ -172,41 +174,12 @@ impl<TP: ThreadPool + Sync> Runner for &'static TP {
 impl<TP: ThreadPool + Sync + Send + 'static> Runner for Arc<TP> {
     type ThreadPool = TP;
 
-    fn when<CC: CownCollection, T: for<'a> FnOnce(CC::Guard<'a>) + Send + Sync + 'static>(&self, cowns: CC, thunk: T) {
+    fn when<L: LockCollection, T: for<'a> FnOnce(L::Ref<'a>) + Send + Sync + 'static>(&self, cowns: L, thunk: T) {
         when(self, cowns, thunk)
     }
 
     fn threadpool(&self) -> &Self::ThreadPool {
         &*self
-    }
-}
-
-/// A mutex where multiple mutexes can be locked in parallel.
-pub struct Cown<T> {
-    last: AtomicPtr<Request>,
-    data: UnsafeCell<T>,
-}
-
-/// Information about the location at which a [`Cown`] is stored.
-#[derive(Debug)]
-pub struct CownInfo {
-    last: *const AtomicPtr<Request>,
-}
-
-impl PartialEq for CownInfo {
-    fn eq(&self, other: &Self) -> bool {
-        self.last.eq(&other.last)
-    }
-}
-impl Eq for CownInfo {}
-impl PartialOrd for CownInfo {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        (self.last as usize).partial_cmp(&(other.last as usize))
-    }
-}
-impl Ord for CownInfo {
-    fn cmp(&self, other: &Self) -> Ordering {
-        (self.last as usize).cmp(&(other.last as usize))
     }
 }
 
@@ -218,29 +191,6 @@ const NULL: *mut Request = 0 as *mut _;
 ///
 /// TODO: check provenance (`offset` a no-provenance pointer is legal, but is `byte_offset`)?
 const POISONED: *mut Request = 1 as *mut _;
-
-trait CownBase {
-    #[doc(hidden)]
-    #[allow(private_interfaces)]
-    fn info(&self) -> CownInfo;
-}
-
-/// Needed to work around an issue with Rust's trait system.  Effectively part of [`CownCollection`].
-pub trait CownCollectionSuper: Send + Sync + 'static {
-    /// The guard protecting the internal mutex(es).
-    type Guard<'a>;
-}
-
-/// Indicates that a type is a collection of [`Cown`]s and can be locked together.
-pub trait CownCollection: CownCollectionSuper {
-    /// Get the locks of the cowns in the collection.  Structurally mirrors the collection.
-    ///
-    /// Does not check if the [`Cown`]s are in use.
-    unsafe fn get_mut(&self) -> Self::Guard<'_>;
-    #[doc(hidden)]
-    #[allow(private_interfaces)]
-    fn infos(&self) -> impl IntoIterator<Item = CownInfo>;
-}
 
 struct Request {
     next: AtomicPtr<()>,
@@ -323,13 +273,13 @@ trait Thunk: Send + Sync + Send + 'static {
     unsafe fn consume_boxed_and_release(&mut self);
 }
 
-impl<C, F> Thunk for (C, Option<F>)
+impl<L, F> Thunk for (L, Option<F>)
 where
-    C: CownCollection,
-    F: for<'a> FnOnce(C::Guard<'a>) + Send + Sync + 'static,
+    L: LockCollection,
+    F: for<'a> FnOnce(L::Ref<'a>) + Send + Sync + 'static,
 {
     unsafe fn consume_boxed_and_release(&mut self) {
-        self.1.take().unwrap()(self.0.get_mut());
+        self.1.take().unwrap()(self.0.get_ref());
     }
 }
 
@@ -372,149 +322,3 @@ fn resolve_one<R: Runner>(this: NonNull<Behavior>, runner: &R) {
         }
     }
 }
-
-unsafe impl<T: Send> Send for Cown<T> {}
-unsafe impl<T: Sync> Sync for Cown<T> {}
-// impl<T> UnwindSafe for Cown<T> {}
-
-impl<T> Cown<T> {
-    /// Create a new `cown`.
-    pub const fn new(value: T) -> Self {
-        Cown {
-            last: AtomicPtr::new(null_mut()),
-            data: UnsafeCell::new(value),
-        }
-    }
-    /// Extracts the inner data from the `cown`.
-    pub fn into_inner(self) -> LockResult<T> {
-        Ok(self.data.into_inner())
-    }
-    /// Returns a mutable reference to the underlying data.  In practice, forwarded to the internal
-    /// mutex.
-    pub fn get_mut(&mut self) -> LockResult<&mut T> {
-        Ok(self.data.get_mut())
-    }
-}
-
-impl<T: Send + Sync + 'static> CownBase for Cown<T> {
-    #[doc(hidden)]
-    #[allow(private_interfaces)]
-    fn info(&self) -> CownInfo {
-        CownInfo { last: &self.last }
-    }
-}
-
-macro_rules! ref_cown_collection {
-    ( $v:ident => $( $t:ty ),+ )  =>  {
-        $(
-            impl<$v: Send + Sync + 'static> CownCollectionSuper for $t {
-                type Guard<'a> = &'a mut T;
-            }
-            impl<$v: Send + Sync + 'static> CownCollection for $t {
-                unsafe fn get_mut(&self) -> Self::Guard<'_> {
-                    &mut *UnsafeCell::raw_get(&self.data)
-                }
-
-                #[doc(hidden)]
-                #[allow(private_interfaces)]
-                fn infos<'a>(&'a self) -> impl IntoIterator<Item=CownInfo> {
-                    once(self.info())
-                }
-            }
-        )+
-    };
-}
-
-ref_cown_collection! {
-    T => &'static Cown<T>, Arc<Cown<T>>
-}
-
-macro_rules! collection_cown_collection {
-    ( $v:ident => $( $t:ident ),+ ) => {
-        $(
-            impl<$v: CownCollectionSuper> CownCollectionSuper for $t<$v> {
-                type Guard<'a> = $t<$v::Guard<'a>>;
-            }
-            impl<$v: CownCollection> CownCollection for $t<$v> {
-                unsafe fn get_mut(&self) -> Self::Guard<'_> {
-                    self.into_iter().map(|cc| unsafe { cc.get_mut() }).collect()
-                }
-
-                #[doc(hidden)]
-                #[allow(private_interfaces)]
-                fn infos(&self) -> impl IntoIterator<Item=CownInfo> {
-                    self.into_iter().flat_map($v::infos)
-                }
-            }
-        )+
-    };
-}
-
-collection_cown_collection! {
-    T => Vec, VecDeque, LinkedList
-}
-
-impl<T: CownCollectionSuper, const N: usize> CownCollectionSuper for [T; N] {
-    type Guard<'a> = [T::Guard<'a>; N];
-}
-impl<T: CownCollection, const N: usize> CownCollection for [T; N] {
-    unsafe fn get_mut(&self) -> Self::Guard<'_> {
-        self.each_ref().map(|cc| unsafe { cc.get_mut() })
-    }
-    #[doc(hidden)]
-    #[allow(private_interfaces)]
-    fn infos(&self) -> impl IntoIterator<Item = CownInfo> {
-        self.iter().flat_map(T::infos)
-    }
-}
-
-macro_rules! variadic_cown_collection {
-    ($($v:ident)*)   =>  {
-        impl<$($v: CownCollectionSuper,)*> CownCollectionSuper for ($($v,)*) {
-            type Guard<'a> = ($($v::Guard<'a>,)*);
-        }
-        impl<$($v: CownCollection,)*> CownCollection for ($($v,)*) {
-            unsafe fn get_mut(&self) -> Self::Guard<'_> {
-                #![allow(non_snake_case)]
-                let ($(ref $v,)*) = self;
-                #[allow(clippy::unused_unit)]
-                ($($v.get_mut(),)*)
-            }
-            #[doc(hidden)]
-            #[allow(private_interfaces)]
-            fn infos(&self) -> impl IntoIterator<Item=CownInfo> {
-                #![allow(non_snake_case)]
-                let ($(ref $v,)*) = self;
-                empty() $(.chain($v.infos()))*
-            }
-        }
-    }
-}
-
-variadic_cown_collection! {}
-variadic_cown_collection! { A }
-variadic_cown_collection! { A B }
-variadic_cown_collection! { A B C }
-variadic_cown_collection! { A B C D }
-variadic_cown_collection! { A B C D E }
-variadic_cown_collection! { A B C D E F }
-variadic_cown_collection! { A B C D E F G }
-variadic_cown_collection! { A B C D E F G H }
-variadic_cown_collection! { A B C D E F G H I }
-variadic_cown_collection! { A B C D E F G H I J }
-variadic_cown_collection! { A B C D E F G H I J K }
-variadic_cown_collection! { A B C D E F G H I J K L }
-variadic_cown_collection! { A B C D E F G H I J K L M }
-variadic_cown_collection! { A B C D E F G H I J K L M N }
-variadic_cown_collection! { A B C D E F G H I J K L M N O }
-variadic_cown_collection! { A B C D E F G H I J K L M N O P }
-variadic_cown_collection! { A B C D E F G H I J K L M N O P Q }
-variadic_cown_collection! { A B C D E F G H I J K L M N O P Q R }
-variadic_cown_collection! { A B C D E F G H I J K L M N O P Q R S }
-variadic_cown_collection! { A B C D E F G H I J K L M N O P Q R S T }
-variadic_cown_collection! { A B C D E F G H I J K L M N O P Q R S T U }
-variadic_cown_collection! { A B C D E F G H I J K L M N O P Q R S T U V }
-variadic_cown_collection! { A B C D E F G H I J K L M N O P Q R S T U V W }
-variadic_cown_collection! { A B C D E F G H I J K L M N O P Q R S T U V W X }
-variadic_cown_collection! { A B C D E F G H I J K L M N O P Q R S T U V W X Y }
-variadic_cown_collection! { A B C D E F G H I J K L M N O P Q R S T U V W X Y Z }

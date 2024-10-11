@@ -1,4 +1,4 @@
-use crate::{Cown, Runner};
+use crate::{Cown, Imm, Mut, Runner};
 use rand::prelude::SliceRandom;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
@@ -33,12 +33,12 @@ pub fn sequential_1(runner: impl Runner) {
     const COUNT: usize = 10;
     let cown = Arc::new(Cown::new(Vec::with_capacity(COUNT)));
     for i in 0..COUNT {
-        runner.when(cown.clone(), move |cown| {
+        runner.when(Mut(cown.clone()), move |cown| {
             cown.push(i);
         });
     }
     let (sender, receiver) = channel();
-    runner.when(cown.clone(), move |guard| {
+    runner.when(Mut(cown.clone()), move |guard| {
         for (i, v) in guard.drain(..).enumerate() {
             assert_eq!(i, v);
         }
@@ -51,7 +51,7 @@ pub fn indirect_seq(runner: impl Runner) {
     let [a, b, c, d] = [0; 4].map(Cown::new).map(Arc::new);
     let counter = Arc::new(AtomicUsize::new(0));
     let (sender, receiver) = channel();
-    runner.when((a.clone(), b.clone()), {
+    runner.when(Mut((a.clone(), b.clone())), {
         let counter = counter.clone();
         move |(a, b)| {
             assert_eq!(*a, 0);
@@ -61,7 +61,7 @@ pub fn indirect_seq(runner: impl Runner) {
             assert_eq!(counter.fetch_add(1, Ordering::AcqRel), 0);
         }
     });
-    runner.when((b.clone(), c.clone()), {
+    runner.when(Mut((b.clone(), c.clone())), {
         let counter = counter.clone();
         move |(b, c)| {
             assert_eq!(*b, 1);
@@ -71,7 +71,7 @@ pub fn indirect_seq(runner: impl Runner) {
             assert_eq!(counter.fetch_add(1, Ordering::AcqRel), 1);
         }
     });
-    runner.when((c.clone(), d.clone()), {
+    runner.when((Mut(c.clone()), Mut(d.clone())), {
         let counter = counter.clone();
         move |(c, d)| {
             assert_eq!(*c, 1);
@@ -81,7 +81,7 @@ pub fn indirect_seq(runner: impl Runner) {
             assert_eq!(counter.fetch_add(1, Ordering::AcqRel), 2);
         }
     });
-    runner.when((a, b, c, d), move |(a, b, c, d)| {
+    runner.when(Imm((a, b, c, d)), move |(a, b, c, d)| {
         assert_eq!(*a, 1);
         assert_eq!(*b, 2);
         assert_eq!(*c, 2);
@@ -96,7 +96,7 @@ pub fn triangle(runner: impl Runner) {
     let [top, left, right] = [0; 3].map(Cown::new).map(Arc::new);
     let counter = Arc::new(AtomicUsize::new(0));
     let (sender, receiver) = channel();
-    runner.when(top.clone(), {
+    runner.when(Mut(top.clone()), {
         let counter = counter.clone();
         move |top| {
             assert_eq!(counter.fetch_add(1, Ordering::AcqRel), 0);
@@ -114,9 +114,9 @@ pub fn triangle(runner: impl Runner) {
             *side += 1;
         }
     };
-    runner.when((top.clone(), left.clone()), sides.clone());
-    runner.when((top.clone(), right.clone()), sides);
-    runner.when((left.clone(), right.clone()), {
+    runner.when(Mut((top.clone(), left.clone())), sides.clone());
+    runner.when(Mut((top.clone(), right.clone())), sides);
+    runner.when(Mut((left.clone(), right.clone())), {
         let counter = counter.clone();
         move |(left, right)| {
             assert_eq!(counter.fetch_add(1, Ordering::AcqRel), 3);
@@ -126,7 +126,7 @@ pub fn triangle(runner: impl Runner) {
             *right += 1;
         }
     });
-    runner.when((top, right, left), {
+    runner.when(Imm((top, right, left)), {
         let counter = counter.clone();
         move |(top, left, right)| {
             assert_eq!(counter.load(Ordering::Acquire), 4);
@@ -142,12 +142,12 @@ pub fn triangle(runner: impl Runner) {
 pub fn recursive_sequential(runner: impl Runner, max_depth: usize) {
     fn inner(runner: impl Runner, cown: Arc<Cown<usize>>, sender: Sender<()>, max_depth: usize, depth: usize) {
         if depth == max_depth {
-            runner.when(cown, move |c| {
+            runner.when(Imm(cown), move |c| {
                 assert_eq!(*c, 100 + depth);
                 sender.send(()).unwrap();
             })
         } else {
-            runner.when(cown.clone(), {
+            runner.when(Mut(cown.clone()), {
                 let runner = runner.clone();
                 move |c| {
                     assert_eq!(*c, 100 + depth);
@@ -198,8 +198,8 @@ pub fn recursive_shuffle(runner: impl Runner, max_depth: usize) {
             let vec = cowns.choose_multiple(&mut rng, len).cloned().collect::<Vec<_>>();
             if depth == max_depth {
                 let sender = sender.clone();
-                runner.when(vec, move |cowns| {
-                    for cown in cowns {
+                runner.when(Mut(vec), move |mut cowns| {
+                    for cown in &mut cowns {
                         cown.push(id);
                     }
                     sender.send(()).unwrap();
@@ -209,7 +209,7 @@ pub fn recursive_shuffle(runner: impl Runner, max_depth: usize) {
                 let cowns = cowns.clone();
                 let sender = sender.clone();
                 let rng = SmallRng::from_rng(&mut rng).unwrap();
-                runner.when(vec, {
+                runner.when(Mut(vec), {
                     let runner = runner.clone();
                     move |mut current| {
                         recurse(runner, cowns.clone(), sender.clone(), rng, depth + 1, max_depth, Some(ident));

@@ -1,4 +1,4 @@
-use crate::{when, CownCollection};
+use crate::{when, LockCollection};
 
 impl crate::ThreadPool for threadpool::ThreadPool {
     fn run<T: FnOnce() + Send + Sync + 'static>(&self, task: T) {
@@ -9,10 +9,10 @@ impl crate::ThreadPool for threadpool::ThreadPool {
 impl crate::Runner for threadpool::ThreadPool {
     type ThreadPool = Self;
 
-    fn when<CC, T>(&self, cowns: CC, thunk: T)
+    fn when<L, T>(&self, cowns: L, thunk: T)
     where
-        CC: CownCollection,
-        T: for<'a> FnOnce(CC::Guard<'a>) + Send + Sync + 'static,
+        L: LockCollection,
+        T: for<'a> FnOnce(L::Ref<'a>) + Send + Sync + 'static,
     {
         when(self, cowns, thunk);
     }
