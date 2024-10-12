@@ -17,7 +17,7 @@ macro_rules! ref_cown_collection {
                     &*UnsafeCell::get(&self.data)
                 }
                 fn infos<'a>(&'a self) -> impl Iterator<Item=CownInfo> {
-                    iter::once(self.info())
+                    iter::once(CownInfo { last: &self.meta })
                 }
             }
         )+

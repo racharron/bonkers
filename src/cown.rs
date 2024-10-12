@@ -1,21 +1,21 @@
-use crate::{CollectionSliceImm, CollectionSliceMut, CownSliceImm, CownSliceMut, Request, VecDequeLockImm, VecDequeLockMut};
+use crate::{CollectionSliceImm, CollectionSliceMut, CownSliceImm, CownSliceMut, VecDequeLockImm, VecDequeLockMut};
 use std::cell::UnsafeCell;
 use std::cmp::Ordering;
 use std::collections::{vec_deque, VecDeque};
 use std::ptr::null_mut;
-use std::sync::atomic::AtomicPtr;
+use std::sync::atomic::{AtomicPtr, AtomicUsize};
 use std::sync::{Arc, LockResult};
 use std::{iter, slice};
+use crate::request::Request;
 
 /// A mutex where multiple mutexes can be locked in parallel.
 pub struct Cown<T> {
-    pub(crate) last: AtomicPtr<Request>,
+    pub(crate) meta: CownBase,
     pub(crate) data: UnsafeCell<T>,
 }
 
-/// Type erased.
-pub(crate) trait CownBase {
-    fn info(&self) -> CownInfo;
+pub(crate) struct CownBase {
+    pub(crate) last: AtomicPtr<Request>,
 }
 
 /// Needed to work around an issue with Rust's trait system.  Effectively part of [`CownCollection`].
@@ -44,7 +44,9 @@ impl<T> Cown<T> {
     /// Create a new `cown`.
     pub const fn new(value: T) -> Self {
         Cown {
-            last: AtomicPtr::new(null_mut()),
+            meta: CownBase {
+                last: AtomicPtr::new(null_mut()),
+            },
             data: UnsafeCell::new(value),
         }
     }
@@ -56,12 +58,6 @@ impl<T> Cown<T> {
     /// mutex.
     pub fn get_mut(&mut self) -> LockResult<&mut T> {
         Ok(self.data.get_mut())
-    }
-}
-
-impl<T: Send + Sync + 'static> CownBase for Cown<T> {
-    fn info(&self) -> CownInfo {
-        CownInfo { last: &self.last }
     }
 }
 
@@ -79,7 +75,7 @@ impl<T: Send + Sync + 'static> CownCollection for &'static [Cown<T>] {
     }
 
     fn infos(&self) -> impl Iterator<Item = CownInfo> {
-        self.iter().map(CownBase::info)
+        self.iter().map(|cown| CownInfo { last: &cown.meta as *const _ as *mut _ })
     }
 }
 
@@ -97,7 +93,7 @@ impl<T: Send + Sync + 'static> CownCollection for Arc<[Cown<T>]> {
     }
 
     fn infos(&self) -> impl Iterator<Item = CownInfo> {
-        self.iter().map(CownBase::info)
+        self.iter().map(|cown| CownInfo { last: &cown.meta as *const _ as *mut _ })
     }
 }
 
@@ -195,7 +191,7 @@ impl<T: CownCollection> CownCollection for VecDeque<T> {
 /// Type-erased information about the location at which a [`Cown`] is stored.
 #[derive(Clone, Copy, Debug, Hash)]
 pub struct CownInfo {
-    pub(crate) last: *const AtomicPtr<Request>,
+    pub(crate) last: *mut CownBase,
 }
 
 impl PartialEq for CownInfo {
