@@ -1,12 +1,12 @@
+use crate::request::Request;
 use crate::{CollectionSliceImm, CollectionSliceMut, CownSliceImm, CownSliceMut, VecDequeLockImm, VecDequeLockMut};
 use std::cell::UnsafeCell;
 use std::cmp::Ordering;
 use std::collections::{vec_deque, VecDeque};
 use std::ptr::null_mut;
-use std::sync::atomic::{AtomicPtr, AtomicUsize};
+use std::sync::atomic::AtomicPtr;
 use std::sync::{Arc, LockResult};
 use std::{iter, slice};
-use crate::request::Request;
 
 /// A mutex where multiple mutexes can be locked in parallel.
 pub struct Cown<T> {
@@ -75,7 +75,9 @@ impl<T: Send + Sync + 'static> CownCollection for &'static [Cown<T>] {
     }
 
     fn infos(&self) -> impl Iterator<Item = CownInfo> {
-        self.iter().map(|cown| CownInfo { last: &cown.meta as *const _ as *mut _ })
+        self.iter().map(|cown| CownInfo {
+            last: &cown.meta as *const _ as *mut _,
+        })
     }
 }
 
@@ -93,7 +95,9 @@ impl<T: Send + Sync + 'static> CownCollection for Arc<[Cown<T>]> {
     }
 
     fn infos(&self) -> impl Iterator<Item = CownInfo> {
-        self.iter().map(|cown| CownInfo { last: &cown.meta as *const _ as *mut _ })
+        self.iter().map(|cown| CownInfo {
+            last: &cown.meta as *const _ as *mut _,
+        })
     }
 }
 

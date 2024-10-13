@@ -62,7 +62,6 @@
 use erasable::{Erasable, ErasedPtr};
 use slice_dst::SliceWithHeader;
 use std::collections::VecDeque;
-use std::convert::identity;
 use std::ptr::{addr_of_mut, null_mut, NonNull};
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
 use std::sync::Arc;
@@ -137,7 +136,12 @@ pub trait Runner: Clone + Send + Sync + 'static {
 /// pool.when((c, d), |_| ...); //  Task 3
 /// ```
 /// will have all three tasks run in sequence, even though the required `cown`s of tasks 1 and 3 do not overlap.
-pub fn when<R: Runner, L: LockCollection, T: for<'a> FnOnce(L::Ref<'a>) + Send + Sync + 'static>(runner: &R, cowns: L, thunk: T) {
+pub fn when<R, L, T>(runner: &R, cowns: L, thunk: T)
+where
+    R: Runner,
+    L: LockCollection,
+    T: for<'a> FnOnce(L::Ref<'a>) + Send + Sync + 'static,
+{
     let mut infos = Vec::from_iter(cowns.infos());
     infos.sort_unstable_by(|a, b| a.cown.cmp(&b.cown));
     infos.windows(2).for_each(|adjacent| assert_ne!(adjacent[0].cown, adjacent[1].cown));
@@ -151,12 +155,12 @@ pub fn when<R: Runner, L: LockCollection, T: for<'a> FnOnce(L::Ref<'a>) + Send +
     ));
     unsafe {
         let requests_base = addr_of_mut!((*behavior).slice) as *mut Request;
-        let behavior = NonNull::new_unchecked(behavior);
+        let behavior = NonNull::new(behavior).unwrap();
         for i in 0..size {
             Request::start_appending(requests_base.add(i), behavior, runner);
         }
         for i in 0..size {
-            Request::finish_appending(requests_base.add(i));
+            Request::finish_appending(requests_base.add(i), behavior);
         }
         resolve_one(behavior, runner);
     }
@@ -187,92 +191,122 @@ impl<TP: ThreadPool + Sync + Send + 'static> Runner for Arc<TP> {
 }
 
 impl Request {
-    pub fn finish_appending(this: *mut Self) {
+    pub fn finish_appending(this: *mut Self, behavior: NonNull<Behavior>) {
         unsafe {
-            (*this).scheduled_and_next_behavior.set_scheduled();
+            if !(*this).lock.read_only() {
+                let mut imm = (*this).data.prev_imm.swap(null_mut(), AtomicOrd::AcqRel);
+                if !imm.is_null() {
+                    //  Over count by 1 so 0 can be used as a sentinel value for unassigned.
+                    let mut count = 1;
+                    loop {
+                        count += 1;
+                        (*imm).state.set_next_behavior(behavior.as_ptr() as *mut _);
+                        imm = (*imm).data.prev_imm.swap(this, AtomicOrd::AcqRel);
+                        if imm.is_null() || !(*imm).lock.read_only() {
+                            break;
+                        }
+                    }
+                    (*this).data.imm_count.store(count, AtomicOrd::Release);
+                }
+                (*this).state.set_scheduled();
+            }
         }
     }
     pub fn start_appending<R: Runner>(this: *mut Self, behavior: NonNull<Behavior>, runner: &R) {
         unsafe {
-            let prev = (*(*this).lock).last.swap(this, AtomicOrd::AcqRel);
+            let prev = (*(*this).lock.cown()).last.swap(this, AtomicOrd::AcqRel);
             match prev {
                 request::NULL => {
-                    if (*this).read_only {
-                        Self::release(this, runner);
-                    } else {
-                        resolve_one(behavior, runner);
-                    }
-                },
+                    resolve_one(behavior, runner);
+                }
                 request::POISONED => todo!("poisoned!"),
                 prev => {
                     (*prev).next_request.store(this, AtomicOrd::Release);
+                    if (*prev).lock.read_only() {
+                        (*this).data.prev_imm.store(prev, AtomicOrd::Release);
+                    }
                     let mut backoff = Backoff::new();
-                    while !(*prev).scheduled.load(AtomicOrd::Acquire) {
+                    while !(*prev).state.scheduled() {
                         if !backoff.snooze() {
                             yield_now();
                         }
                     }
-                    (*prev).next_behavior.store(behavior.as_ptr() as *mut _, AtomicOrd::Release);
+                    if !(*this).lock.read_only() {
+                        (*prev).state.set_next_behavior(behavior.as_ptr() as *mut _);
+                    }
                 }
             }
         }
     }
-    pub fn release_imm<R: Runner>(this: *mut Self, runner: &R) {
+    pub fn release<R: Runner>(this: *mut Self, runner: &R) {
         unsafe {
-            let next_mut = (*this).release_data.prev_or_mut.load(AtomicOrd::Acquire);
-            if next_mut.is_null() {
-                let next_request = (*this).next_request.load(AtomicOrd::Acquire);
-                if next_request.is_null() {
-                    if (*next_request).lock.read_only() {
-                        let _ = (*next_request).release_data.prev_or_mut.compare_exchange(this, request::NULL, AtomicOrd::AcqRel, AtomicOrd::Acquire);
-                    }
-                }
-            } else if (*next_mut).lock.read_only() {
-                todo!()
+            if let Some(next_behavior) = (*this).state.next_behavior() {
+                Self::release_request(this, next_behavior, runner);
             } else {
-                if (*next_mut).release_data.imm_count.fetch_sub(1, AtomicOrd::AcqRel) == 1 {
-
+                if (*(*this).lock.cown())
+                    .last
+                    .compare_exchange(this, request::NULL, AtomicOrd::SeqCst, AtomicOrd::Acquire)
+                    .is_ok()
+                {
+                    return;
+                }
+                let mut backoff = Backoff::new();
+                loop {
+                    if let Some(next_behavior) = (*this).state.next_behavior() {
+                        Self::release_request((*this).next_request.load(AtomicOrd::Acquire), next_behavior, runner);
+                        break;
+                    } else if !backoff.snooze() {
+                        yield_now();
+                    }
                 }
             }
         }
     }
-    pub fn release_mut<R: Runner>(this: *mut Self, runner: &R) {
-        unsafe {
-            let mut current = this;
-            loop {
-                if let Some(next_behavior) = NonNull::new((*current).scheduled_and_next_behavior.load(AtomicOrd::Acquire) as *mut _) {
-                    let next_behavior = Behavior::unerase(next_behavior);
-                    (*current).released = true;
+
+    unsafe fn release_request<R: Runner>(this: *mut Request, mut next_behavior: NonNull<Behavior>, runner: &R) {
+        if (*this).lock.read_only() {
+            let other_request = (*this).data.other_request.load(AtomicOrd::Acquire);
+            if other_request.is_null() {
+                (*this).state.set_next_behavior(null_mut());
+                let latest_other_request = (*this).data.other_request.load(AtomicOrd::Acquire);
+                if !latest_other_request.is_null() {
+                    Self::release_read_only(this, runner, latest_other_request);
+                }
+            } else {
+                Self::release_read_only(this, runner, other_request);
+            }
+        } else {
+            if let Some(mut next_request) = NonNull::new((*this).next_request.load(AtomicOrd::Acquire)) {
+                while (*next_request.as_ptr()).lock.read_only() {
                     resolve_one(next_behavior, runner);
-                    if (*current).read_only {
-                        (*(*this).lock).imm_count.fetch_add(1, AtomicOrd::AcqRel);
-                        let next_request = (*current).next_request.load(AtomicOrd::Acquire);
-                        if (*next_request).read_only {
-                            current = next_request;
-                        } else {
-                            (*(*this).lock).next_mut.store(next_behavior.as_ptr() as *mut _, AtomicOrd::Release);
-                            return
-                        }
-                    } else {
-                        return;
+                    let Some(next) = (*next_request.as_ptr()).state.next_behavior() else { return };
+                    next_behavior = next;
+                    next_request = NonNull::new((*next_request.as_ptr()).next_request.load(AtomicOrd::Acquire)).unwrap();
+                }
+            } else {
+                unreachable!()
+            }
+        }
+    }
+
+    unsafe fn release_read_only<R: Runner>(this: *mut Request, runner: &R, other_request: *mut Request) {
+        let next = (*this).next_request.load(AtomicOrd::Acquire);
+        if next.is_null() {
+            unreachable!() // Earlier, we checked (*this).state.next_behavior()
+        } else {
+            (*next).data.prev_imm.store(other_request, AtomicOrd::Release);
+            (*other_request).next_request.store(next, AtomicOrd::Release);
+            let next_mut = (*this).data.next_mut.load(AtomicOrd::Acquire);
+            let mut backoff = Backoff::new();
+            loop {
+                let imm_count = (*next_mut).data.imm_count.load(AtomicOrd::Acquire);
+                if imm_count != 0 {
+                    if (*next_mut).data.imm_count.fetch_sub(1, AtomicOrd::AcqRel) == 2 {
+                        resolve_one((*this).state.next_behavior().unwrap(), runner);
                     }
-                } else {
-                    let old = (*(*this).lock).last
-                        .compare_exchange(current, NULL, AtomicOrd::SeqCst, AtomicOrd::Acquire)
-                        .unwrap_or_else(identity);
-                    if std::ptr::addr_eq(old, current) {
-                        return;
-                    }
-                    let mut backoff = Backoff::new();
-                    loop {
-                        if let Some(new) = NonNull::new((*current).scheduled_and_next_behavior.load(AtomicOrd::Acquire) as *mut _) {
-                            let next_behavior = Behavior::unerase(new);
-                            resolve_one(next_behavior, runner);
-                            return;
-                        } else if !backoff.snooze() {
-                            yield_now();
-                        }
-                    }
+                    break;
+                } else if !backoff.snooze() {
+                    yield_now()
                 }
             }
         }
@@ -301,6 +335,8 @@ struct BehaviorHeader {
     thunk: Box<dyn Thunk>,
     count: AtomicUsize,
 }
+
+type ErasedBehavior = usize;
 
 fn resolve_one<R: Runner>(this: NonNull<Behavior>, runner: &R) {
     unsafe {
