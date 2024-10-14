@@ -192,39 +192,51 @@ impl<TP: ThreadPool + Sync + Send + 'static> Runner for Arc<TP> {
 
 impl Request {
     pub fn finish_appending(this: *mut Self, behavior: NonNull<Behavior>) {
+        println!("finish_appending {:p}", this);
         unsafe {
             if !(*this).lock.read_only() {
-                let mut imm = (*this).data.prev_imm.swap(null_mut(), AtomicOrd::AcqRel);
-                if !imm.is_null() {
-                    //  Over count by 1 so 0 can be used as a sentinel value for unassigned.
-                    let mut count = 1;
-                    loop {
-                        count += 1;
-                        (*imm).state.set_next_behavior(behavior.as_ptr() as *mut _);
-                        imm = (*imm).data.prev_imm.swap(this, AtomicOrd::AcqRel);
-                        if imm.is_null() || !(*imm).lock.read_only() {
-                            break;
+                println!("finish_appending {:p} is mut", this);
+                let mut imm = (*this).data.prev.load(AtomicOrd::Acquire);
+                if imm.is_null() {
+                    println!("finish_appending {:p} imm = NULL", this);
+                    (*this).data.prev.store(null_mut(), AtomicOrd::Release);
+                } else {
+                    println!("finish_appending {:p} imm = {:p}", this, imm);
+                    if (*imm).lock.read_only() {
+                        //  Over count by 1 so 0 can be used as a sentinel value for unassigned.
+                        let mut count = 1;
+                        loop {
+                            count += 1;
+                            (*imm).state.set_next_behavior(behavior.as_ptr() as *mut _);
+                            imm = (*imm).data.prev.swap(this, AtomicOrd::AcqRel);
+                            if imm.is_null() || !(*imm).lock.read_only() {
+                                break;
+                            }
                         }
+                        (*imm).data.imm_count.store(count, AtomicOrd::Release);
+                    } else {
+                        (*imm).data.prev.store(null_mut(), AtomicOrd::Release);
+                        (*imm).state.set_next_behavior(behavior.as_ptr() as *mut _);
                     }
-                    (*this).data.imm_count.store(count, AtomicOrd::Release);
                 }
-                (*this).state.set_scheduled();
             }
+            (*this).state.set_scheduled();
         }
     }
     pub fn start_appending<R: Runner>(this: *mut Self, behavior: NonNull<Behavior>, runner: &R) {
+        println!("start_appending {:p}", this);
         unsafe {
             let prev = (*(*this).lock.cown()).last.swap(this, AtomicOrd::AcqRel);
             match prev {
                 request::NULL => {
+                    println!("start_appending {:p}: prev = NULL", this);
                     resolve_one(behavior, runner);
                 }
                 request::POISONED => todo!("poisoned!"),
                 prev => {
+                    println!("start_appending {:p} prev = {:p}", this, prev);
                     (*prev).next_request.store(this, AtomicOrd::Release);
-                    if (*prev).lock.read_only() {
-                        (*this).data.prev_imm.store(prev, AtomicOrd::Release);
-                    }
+                    (*this).data.prev.store(prev, AtomicOrd::Release);
                     let mut backoff = Backoff::new();
                     while !(*prev).state.scheduled() {
                         if !backoff.snooze() {
@@ -232,6 +244,7 @@ impl Request {
                         }
                     }
                     if !(*this).lock.read_only() {
+                        println!("start_appending {:p} this is mut", this);
                         (*prev).state.set_next_behavior(behavior.as_ptr() as *mut _);
                     }
                 }
@@ -240,6 +253,7 @@ impl Request {
     }
     pub fn release<R: Runner>(this: *mut Self, runner: &R) {
         unsafe {
+            println!("release {:p}", this);
             if let Some(next_behavior) = (*this).state.next_behavior() {
                 Self::release_request(this, next_behavior, runner);
             } else {
@@ -248,12 +262,13 @@ impl Request {
                     .compare_exchange(this, request::NULL, AtomicOrd::SeqCst, AtomicOrd::Acquire)
                     .is_ok()
                 {
+                    println!("release {:p} return", this);
                     return;
                 }
                 let mut backoff = Backoff::new();
                 loop {
                     if let Some(next_behavior) = (*this).state.next_behavior() {
-                        Self::release_request((*this).next_request.load(AtomicOrd::Acquire), next_behavior, runner);
+                        Self::release_request(this, next_behavior, runner);
                         break;
                     } else if !backoff.snooze() {
                         yield_now();
@@ -264,7 +279,9 @@ impl Request {
     }
 
     unsafe fn release_request<R: Runner>(this: *mut Request, mut next_behavior: NonNull<Behavior>, runner: &R) {
+        println!("release_request {:p}", this);
         if (*this).lock.read_only() {
+            println!("release_request {:p} is immutable", this);
             let other_request = (*this).data.other_request.load(AtomicOrd::Acquire);
             if other_request.is_null() {
                 (*this).state.set_next_behavior(null_mut());
@@ -276,12 +293,20 @@ impl Request {
                 Self::release_read_only(this, runner, other_request);
             }
         } else {
+            println!("release_request {:p} is mutable", this);
             if let Some(mut next_request) = NonNull::new((*this).next_request.load(AtomicOrd::Acquire)) {
-                while (*next_request.as_ptr()).lock.read_only() {
+                if (*next_request.as_ptr()).lock.read_only() {
+                    loop {
+                        resolve_one(next_behavior, runner);
+                        let Some(next) = (*next_request.as_ptr()).state.next_behavior() else { return };
+                        next_behavior = next;
+                        next_request = NonNull::new((*next_request.as_ptr()).next_request.load(AtomicOrd::Acquire)).unwrap();
+                        if !(*next_request.as_ptr()).lock.read_only() {
+                            return
+                        }
+                    }
+                } else {
                     resolve_one(next_behavior, runner);
-                    let Some(next) = (*next_request.as_ptr()).state.next_behavior() else { return };
-                    next_behavior = next;
-                    next_request = NonNull::new((*next_request.as_ptr()).next_request.load(AtomicOrd::Acquire)).unwrap();
                 }
             } else {
                 unreachable!()
@@ -290,11 +315,12 @@ impl Request {
     }
 
     unsafe fn release_read_only<R: Runner>(this: *mut Request, runner: &R, other_request: *mut Request) {
+        println!("release_read_only {:p}", this);
         let next = (*this).next_request.load(AtomicOrd::Acquire);
         if next.is_null() {
             unreachable!() // Earlier, we checked (*this).state.next_behavior()
         } else {
-            (*next).data.prev_imm.store(other_request, AtomicOrd::Release);
+            (*next).data.prev.store(other_request, AtomicOrd::Release);
             (*other_request).next_request.store(next, AtomicOrd::Release);
             let next_mut = (*this).data.next_mut.load(AtomicOrd::Acquire);
             let mut backoff = Backoff::new();

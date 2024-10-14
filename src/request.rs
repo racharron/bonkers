@@ -33,25 +33,37 @@ impl Request {
 /// to the next *mutable* [`Behavior`].
 ///
 /// A thin pointer (so it can be atomic).
-pub(crate) struct State(AtomicTagPtr<ErasedBehavior, 1>);
+pub(crate) union State {
+    tagged: ManuallyDrop<AtomicTagPtr<ErasedBehavior, 1>>,
+    raw: ManuallyDrop<AtomicPtr<ErasedBehavior>>,
+    uint: ManuallyDrop<AtomicUsize>,
+}
 impl State {
     pub fn new() -> Self {
-        State(AtomicTagPtr::from(1 as *mut _))
+        State { uint: ManuallyDrop::new(AtomicUsize::new(1)) }
     }
     pub fn scheduled(&self) -> bool {
-        self.0.load(Ordering::Acquire).decompose_tag() == 0
+        unsafe {
+            self.tagged.load(Ordering::Acquire).decompose_tag() == 0
+        }
     }
     /// Erase the not scheduled tag bit.
     pub fn set_scheduled(&self) {
-        self.0.fetch_and(!1, Ordering::AcqRel);
+        unsafe {
+            self.tagged.fetch_and(0, Ordering::AcqRel);
+        }
     }
     /// Should only be called after [`set_next_behavior`] is called.
     pub fn next_behavior(&self) -> Option<NonNull<Behavior>> {
-        NonNull::new(self.0.load(Ordering::Acquire).into_raw() as *mut _).map(|erased| unsafe { Behavior::unerase(erased) })
+        unsafe {
+            NonNull::new(self.raw.load(Ordering::Acquire) as *mut _).map(|erased| Behavior::unerase(erased))
+        }
     }
     /// Keeps the scheduled tag
     pub fn set_next_behavior(&self, next_behavior: *mut ErasedBehavior) {
-        self.0.fetch_or(next_behavior as usize, Ordering::Release);
+        unsafe {
+            self.uint.fetch_and((next_behavior as usize) | 1, Ordering::AcqRel);
+        }
     }
 }
 
@@ -61,7 +73,7 @@ pub(crate) union DataUnion {
     pub imm_count: ManuallyDrop<AtomicUsize>,
     /// The previous immutable lock request.  Null indicates that the previous request of this [`Cown`]
     /// was a mutable lock request.
-    pub prev_imm: ManuallyDrop<AtomicPtr<Request>>,
+    pub prev: ManuallyDrop<AtomicPtr<Request>>,
     /// The next mutable lock request.
     pub next_mut: ManuallyDrop<AtomicPtr<Request>>,
     /// A neutral way of checking if [`prev_imm`] and [`next_mut`] are non-null.
