@@ -2,31 +2,44 @@ use crate::{Behavior, CownBase, ErasedBehavior};
 use erasable::Erasable;
 use std::mem::ManuallyDrop;
 use std::ptr::{null_mut, NonNull};
-use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicUsize, Ordering};
 use tagptr::{AtomicTagPtr, TagPtr};
 
 pub(crate) struct Request {
-    /// Holds whether this [`Request`] is scheduled or a pointer to the next behavior.
-    pub state: State,
+    pub next_behavior: AtomicPtr<ErasedBehavior>,
+    pub state: AtomicU8,
+    /// In mutable requests, points to the next request
+    pub prev_request: AtomicPtr<Request>,
     pub next_request: AtomicPtr<Request>,
-    pub data: DataUnion,
-    pub lock: Lock,
+    pub read_only: bool,
+    pub base: *mut CownBase,
 }
 
 impl Request {
     pub fn new(target: *mut CownBase, read_only: bool) -> Self {
         Request {
-            state: State::new(),
+            next_behavior: AtomicPtr::new(null_mut()),
+            state: AtomicU8::new(Self::UNSCHEDULED),
+            prev_request: AtomicPtr::new(null_mut()),
             next_request: AtomicPtr::new(null_mut()),
-            //  Dummy value
-            data: DataUnion {
-                imm_count: ManuallyDrop::new(AtomicUsize::new(0)),
-            },
-            lock: Lock::new(target, read_only),
+            read_only,
+            base: target,
         }
     }
+    /// Indicates that `scheduled` from the paper is false, otherwise it is true and the additional
+    /// states are to deal with the read-write lock aspects.
+    pub const UNSCHEDULED: u8 = 0;
+    /// This lock is scheduled. If immutable, then it is not released and does not have a mutable
+    /// lock that depends on it.
+    pub const SCHEDULED: u8 = 1;
+    /// This lock is in the middle of being released (or has been released, and should not be added
+    /// to the count of behavior dependencies.
+    pub const RELEASED: u8 = 2;
+    /// This (immutable) lock has a mutable lock that depends on it.
+    pub const HAS_NEXT_MUT: u8 = 3;
 }
 
+/*
 /// Contains [`scheduled`] and [`next`] from the original paper.
 ///
 /// For mutable requests, points to the direct next [`Behavior`].  For immutable requests, points
@@ -67,7 +80,7 @@ impl State {
     }
 }
 
-pub(crate) union DataUnion {
+pub(crate) union Data {
     /// A count (+1) of outstanding immutable locks that need to be freed before this mutable lock can be granted.
     /// Over counts by 1 so zero can be used as an uninitialized value.
     pub imm_count: ManuallyDrop<AtomicUsize>,
@@ -91,7 +104,7 @@ impl Lock {
     pub fn cown(&self) -> *const CownBase {
         self.0.decompose_ptr()
     }
-}
+}*/
 
 unsafe impl Send for Request {}
 

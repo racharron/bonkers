@@ -16,6 +16,7 @@ pub struct Cown<T> {
 
 pub(crate) struct CownBase {
     pub(crate) last: AtomicPtr<Request>,
+    pub(crate) last_mut: AtomicPtr<Request>,
 }
 
 /// Needed to work around an issue with Rust's trait system.  Effectively part of [`CownCollection`].
@@ -46,6 +47,7 @@ impl<T> Cown<T> {
         Cown {
             meta: CownBase {
                 last: AtomicPtr::new(null_mut()),
+                last_mut: AtomicPtr::new(null_mut()),
             },
             data: UnsafeCell::new(value),
         }
